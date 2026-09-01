@@ -2,6 +2,15 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { Asset } from "../assets/asset.entity";
+import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-CreateAssetsTable";
+
+/**
+ * Migrations are listed explicitly rather than by glob: the compiled build
+ * ships .js while development runs .ts, and a glob that matches one does not
+ * match the other. Importing them keeps both honest and fails at compile
+ * time if a file is renamed.
+ */
+const MIGRATIONS = [CreateAssetsTable1756704000000];
 
 @Module({
   imports: [
@@ -13,6 +22,7 @@ import { Asset } from "../assets/asset.entity";
         if (synchronize && config.get("NODE_ENV") === "production") {
           throw new Error("DB_SYNCHRONIZE must not be enabled in production");
         }
+
         return {
           type: "mysql" as const,
           host: config.get<string>("DB_HOST", "127.0.0.1"),
@@ -21,6 +31,12 @@ import { Asset } from "../assets/asset.entity";
           password: config.get<string>("DB_PASSWORD"),
           database: config.get<string>("DB_NAME"),
           entities: [Asset],
+          migrations: MIGRATIONS,
+          // Schema is built by migrations on start-up, so a new deployment
+          // needs nothing but credentials. Opt out with MIGRATIONS_RUN=false
+          // to run them as a separate deploy step instead.
+          migrationsRun: config.get("MIGRATIONS_RUN") !== "false",
+          migrationsTableName: "migrations",
           synchronize,
           charset: "utf8mb4",
           timezone: "Z",

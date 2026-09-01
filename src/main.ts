@@ -2,6 +2,7 @@ import { ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { AppModule } from "./app.module";
+import { ensureDatabase } from "./database/ensure-database";
 
 const DEFAULT_PORTS = [3000, 3002, 3003];
 
@@ -25,6 +26,10 @@ function allowedOrigins(): string[] {
 }
 
 async function bootstrap() {
+  // Create the schema before Nest connects to it; migrations then build
+  // the tables inside. A fresh deployment needs only DB_* in the env.
+  await ensureDatabase();
+
   const app = await NestFactory.create(AppModule);
   app.enableCors({ origin: allowedOrigins() });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
