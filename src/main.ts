@@ -1,4 +1,4 @@
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { AppModule } from "./app.module";
@@ -34,7 +34,7 @@ async function bootstrap() {
   app.enableCors({ origin: allowedOrigins() });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
-  const port = process.env.PORT ?? 3003;
+  const port = Number(process.env.PORT ?? 3003);
 
   // Swagger is a development aid; keep it off in production unless asked for.
   if (process.env.NODE_ENV !== "production" || process.env.SWAGGER === "true") {
@@ -58,6 +58,19 @@ async function bootstrap() {
     });
   }
 
-  await app.listen(port);
+  // 0.0.0.0 rather than the default: a managed host routes to the container
+  // from outside, so binding only the loopback interface answers nothing and
+  // the proxy in front reports 503.
+  await app.listen(port, "0.0.0.0");
+  new Logger("Bootstrap").log(`Asset service listening on 0.0.0.0:${port}`);
 }
-void bootstrap();
+
+// A failure here happens before the port is bound, so the platform sees a
+// process that exited rather than a service that is merely unhealthy. Say
+// which stage failed, in one line, where the host's log will show it.
+bootstrap().catch((err: unknown) => {
+  new Logger("Bootstrap").error(
+    `Asset service failed to start: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  process.exit(1);
+});
