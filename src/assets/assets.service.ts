@@ -24,7 +24,9 @@ export const ALLOWED_TYPES = [
   "image/avif",
 ];
 
-const ALLOWED_FOLDERS = ["products", "categories", "marketing", "ugc", "feed"];
+const ALLOWED_FOLDERS = [
+  "products", "categories", "marketing", "branding", "ugc", "feed",
+];
 
 const EXTENSION: Record<string, string> = {
   "image/jpeg": "jpg",

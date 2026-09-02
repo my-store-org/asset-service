@@ -31,7 +31,7 @@ export class AssetResponseDto {
   @ApiProperty({
     description: "Grouping folder.",
     example: "products",
-    enum: ["products", "categories", "marketing", "ugc", "feed", "uploads"],
+    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "uploads"],
   })
   folder: string;
 
