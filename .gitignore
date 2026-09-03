@@ -2,6 +2,8 @@ node_modules/
 dist/
 .env
 .env.local
+# Holds real credentials; only .env.production.example is committed.
+.env.production
 
 # build info
 *.tsbuildinfo

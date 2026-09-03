@@ -5,7 +5,13 @@ import { DatabaseModule } from "./database/database.module";
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true, envFilePath: [".env"] }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      // .env.production first so a production file wins where both exist;
+      // it is absent in development, which falls through to .env. Real
+      // environment variables set by the host beat both.
+      envFilePath: [".env.production", ".env"],
+    }),
     DatabaseModule,
     AssetsModule,
   ],
