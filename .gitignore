@@ -7,3 +7,6 @@ dist/
 
 # build info
 *.tsbuildinfo
+
+# local DB GUI access, do not commit
+docker-compose.override.yml
