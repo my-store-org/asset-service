@@ -1,0 +1,88 @@
+# The asset service and its database on a single VPS.
+#
+#   cp .env.docker.example .env    # then fill it in
+#   docker compose up -d --build
+#
+# Nginx and TLS stay on the host. The service binds to loopback only; put it
+# behind the same proxy that fronts the API, on its own subdomain.
+
+name: my-store-asset-service
+
+services:
+  # MariaDB to match the API and the managed host. This service's schema is
+  # portable enough for MySQL, but running two engines on one box is a
+  # difference nobody wants to discover during an incident.
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:?set MARIADB_ROOT_PASSWORD in .env}
+      # Created here, which is why the app is told not to create it itself.
+      MARIADB_DATABASE: ${DB_NAME:-my_store_assets}
+      MARIADB_USER: ${DB_USER:?set DB_USER in .env}
+      MARIADB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--su-mysql", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  asset-service:
+    build: .
+    restart: unless-stopped
+    # Node is PID 1 here; without this it never sees SIGTERM and every stop
+    # waits out the ten second kill timeout.
+    init: true
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3003
+
+      # Only the admin console uploads. The storefront reads images from the
+      # CDN and never calls this service, so store subdomains do not belong
+      # here — these are exact origins, no wildcards.
+      CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in .env}
+
+      # A service name, not what .env says: the database is reachable only on
+      # the compose network, never from outside the host.
+      DB_HOST: mariadb
+      DB_PORT: 3306
+      DB_USER: ${DB_USER:?set DB_USER in .env}
+      DB_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      DB_NAME: ${DB_NAME:-my_store_assets}
+
+      # Migrations own the schema and the app runs them itself on start-up,
+      # so a fresh volume needs no manual step. synchronize is refused
+      # outright when NODE_ENV=production.
+      DB_SYNCHRONIZE: "false"
+
+      # MARIADB_DATABASE above already created it, so the app does not need
+      # the privilege to do it again.
+      DB_AUTO_CREATE: "false"
+
+      # --- s3 ---
+      # The service refuses to start without a region. Uploads fail without a
+      # bucket and credentials.
+      AWS_REGION: ${AWS_REGION:?set AWS_REGION in .env}
+      S3_BUCKET: ${S3_BUCKET:-}
+      # Stored on every asset row, so changing it later orphans existing
+      # images rather than moving them.
+      S3_PUBLIC_HOST: ${S3_PUBLIC_HOST:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+
+      SWAGGER: ${SWAGGER:-false}
+    ports:
+      # Loopback only; nginx on the host terminates TLS and proxies here.
+      - "127.0.0.1:3003:3003"
+
+volumes:
+  mariadb-data:

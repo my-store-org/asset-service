@@ -1,0 +1,19 @@
+# Rebuilt inside the image.
+node_modules
+dist
+*.tsbuildinfo
+
+# Never bake configuration or history into an image.
+.env
+.env.*
+!.env.docker.example
+.git
+.gitignore
+
+# Not needed at runtime.
+docker-compose.yml
+Dockerfile
+.dockerignore
+*.md
+.DS_Store
+npm-debug.log*
