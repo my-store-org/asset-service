@@ -49,6 +49,14 @@ export class AssetsController {
     enum: ["products", "categories", "marketing", "ugc", "feed"],
     description: "Grouping folder. Unknown values fall back to 'uploads'.",
   })
+  @ApiQuery({
+    name: "scope",
+    required: false,
+    example: "theme:acme:12",
+    description:
+      "Who the image belongs to. Listing filters on it, so a shop sees only " +
+      "its own uploads and a design only the ones made for it.",
+  })
   @ApiOkResponse({ type: AssetResponseDto })
   @ApiBadRequestResponse({
     description: "Missing file, unsupported type, or over the 15 MB limit.",
@@ -59,8 +67,9 @@ export class AssetsController {
   upload(
     @UploadedFile() file: Express.Multer.File,
     @Query("folder") folder?: string,
+    @Query("scope") scope?: string,
   ) {
-    return this.assets.upload(file, folder);
+    return this.assets.upload(file, folder, scope);
   }
 
   @Get()
@@ -70,9 +79,14 @@ export class AssetsController {
   })
   @ApiQuery({ name: "folder", required: false, example: "products" })
   @ApiQuery({ name: "limit", required: false, example: 50 })
+  @ApiQuery({ name: "scope", required: false, example: "store:acme" })
   @ApiOkResponse({ type: AssetResponseDto, isArray: true })
-  findAll(@Query("folder") folder?: string, @Query("limit") limit?: string) {
-    return this.assets.findAll(folder, limit ? Number(limit) : undefined);
+  findAll(
+    @Query("folder") folder?: string,
+    @Query("limit") limit?: string,
+    @Query("scope") scope?: string,
+  ) {
+    return this.assets.findAll(folder, limit ? Number(limit) : undefined, scope);
   }
 
   @Get(":id")

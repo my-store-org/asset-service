@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { Asset } from "../assets/asset.entity";
 import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-CreateAssetsTable";
+import { AddAssetScope1757300000000 } from "../migrations/1757300000000-AddAssetScope";
 
 /**
  * Migrations are listed explicitly rather than by glob: the compiled build
@@ -10,7 +11,10 @@ import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-Crea
  * match the other. Importing them keeps both honest and fails at compile
  * time if a file is renamed.
  */
-const MIGRATIONS = [CreateAssetsTable1756704000000];
+const MIGRATIONS = [
+  CreateAssetsTable1756704000000,
+  AddAssetScope1757300000000,
+];
 
 @Module({
   imports: [

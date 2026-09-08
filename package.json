@@ -9,6 +9,7 @@
     "start:dev": "nest start",
     "preflight": "node scripts/preflight.js",
     "typecheck": "tsc --noEmit",
+    "backfill-scope": "ts-node src/scripts/backfill-scope.ts",
     "migration:run": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:run",
     "migration:revert": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:revert",
     "migration:show": "typeorm-ts-node-commonjs -d src/database/data-source.ts migration:show",

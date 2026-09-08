@@ -59,7 +59,7 @@ export class AssetsService {
         : new S3Client({ region });
   }
 
-  async upload(file: Express.Multer.File, folder = "uploads") {
+  async upload(file: Express.Multer.File, folder = "uploads", scope = "") {
     if (!file) throw new BadRequestException("No file uploaded");
     if (!ALLOWED_TYPES.includes(file.mimetype)) {
       throw new BadRequestException(
@@ -92,6 +92,9 @@ export class AssetsService {
         size: file.size,
         originalName: file.originalname?.slice(0, 255) ?? "",
         folder: safeFolder,
+        // Trusted as given: the caller knows whose image this is, and the tag
+        // is only ever compared for equality, never interpreted here.
+        scope: scope.slice(0, 190),
       }),
     );
     this.logger.log(`Stored ${asset.id} (${file.size}B) at ${objectKey}`);
@@ -104,9 +107,19 @@ export class AssetsService {
     return this.present(asset);
   }
 
-  async findAll(folder?: string, limit = 50) {
+  /**
+   * Newest first, narrowed by kind and by owner.
+   *
+   * A caller that passes a scope sees only what belongs to it. Passing none
+   * still returns everything — the service's own tooling wants that, and the
+   * endpoint is not the place to decide a caller is untrustworthy.
+   */
+  async findAll(folder?: string, limit = 50, scope?: string) {
     const rows = await this.assets.find({
-      where: folder ? { folder } : {},
+      where: {
+        ...(folder ? { folder } : {}),
+        ...(scope ? { scope } : {}),
+      },
       order: { createdAt: "DESC" },
       take: Math.min(limit, 200),
     });
@@ -139,6 +152,7 @@ export class AssetsService {
       size: asset.size,
       originalName: asset.originalName,
       folder: asset.folder,
+      scope: asset.scope,
       createdAt: asset.createdAt,
     };
   }

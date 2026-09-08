@@ -35,6 +35,14 @@ export class AssetResponseDto {
   })
   folder: string;
 
+  @ApiProperty({
+    description:
+      "Who the image belongs to — the tag the uploader set. Empty on assets " +
+      "stored before ownership was recorded.",
+    example: "theme:acme:12",
+  })
+  scope: string;
+
   @ApiProperty({ type: String, format: "date-time" })
   createdAt: Date;
 }
