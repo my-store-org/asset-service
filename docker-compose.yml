@@ -46,6 +46,12 @@ services:
       NODE_ENV: production
       PORT: 3003
 
+      # Images stored before assets had an owner are left unowned, because the
+      # service cannot know whose they are. Set this to claim them — e.g.
+      # "store:acme" — and a rebuild applies it. Only unowned rows are touched,
+      # so it is safe to leave set.
+      ASSET_BACKFILL_SCOPE: ${ASSET_BACKFILL_SCOPE:-}
+
       # Only the admin console uploads. The storefront reads images from the
       # CDN and never calls this service, so store subdomains do not belong
       # here — these are exact origins, no wildcards.

@@ -1,6 +1,8 @@
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
+import { getDataSourceToken } from "@nestjs/typeorm";
+import type { DataSource } from "typeorm";
 import { AppModule } from "./app.module";
 import { ensureDatabase } from "./database/ensure-database";
 
@@ -25,12 +27,55 @@ function allowedOrigins(): string[] {
   ]);
 }
 
+/**
+ * Gives images stored before ownership existed to the scope named in the
+ * environment, if one is.
+ *
+ * The scope migration deliberately leaves those rows unowned: the service
+ * cannot know who uploaded them, and guessing would hand one merchant's
+ * pictures to another. That is right for a shared bucket and wrong for one
+ * that has only ever served a single shop, where it means the media library
+ * goes empty.
+ *
+ * So the decision is a deployment's to make, and making it is setting
+ * ASSET_BACKFILL_SCOPE — after which a rebuild applies it. Only rows with no
+ * owner are ever touched, so it is safe to leave set: once they are claimed,
+ * every later boot finds nothing to do.
+ */
+async function claimUnownedAssets(ds: DataSource) {
+  const scope = (process.env.ASSET_BACKFILL_SCOPE ?? "").trim();
+  if (!scope) return;
+
+  const logger = new Logger("AssetBackfill");
+  if (scope.length > 190) {
+    logger.error("ASSET_BACKFILL_SCOPE is longer than 190 characters — ignored");
+    return;
+  }
+
+  try {
+    const result = await ds.query(
+      "UPDATE assets SET scope = ? WHERE scope = ''",
+      [scope],
+    );
+    const claimed = (result as { affectedRows?: number }).affectedRows ?? 0;
+    if (claimed) logger.log(`Assigned ${claimed} unowned asset(s) to "${scope}"`);
+  } catch (err) {
+    // Not worth refusing to start over: the service works, the library is
+    // just missing older pictures until this is looked at.
+    logger.error(`Backfill failed: ${(err as Error).message}`);
+  }
+}
+
 async function bootstrap() {
   // Create the schema before Nest connects to it; migrations then build
   // the tables inside. A fresh deployment needs only DB_* in the env.
   await ensureDatabase();
 
   const app = await NestFactory.create(AppModule);
+
+  // After the migrations the module ran, so the column exists to write to.
+  await claimUnownedAssets(app.get(getDataSourceToken()));
+
   app.enableCors({ origin: allowedOrigins() });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
