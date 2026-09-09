@@ -25,7 +25,9 @@ export const ALLOWED_TYPES = [
 ];
 
 const ALLOWED_FOLDERS = [
-  "products", "categories", "marketing", "branding", "ugc", "feed",
+  // "avatars" is the people who run the shop, kept apart from "branding",
+  // which is the shop itself — a staff photo is not a store asset.
+  "products", "categories", "marketing", "branding", "ugc", "feed", "avatars",
 ];
 
 const EXTENSION: Record<string, string> = {
