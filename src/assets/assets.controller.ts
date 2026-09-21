@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
@@ -24,6 +25,7 @@ import {
 } from "@nestjs/swagger";
 import {
   AssetResponseDto,
+  CopyAssetDto,
   DeletedAssetDto,
   UploadAssetDto,
 } from "./asset.dto";
@@ -70,6 +72,18 @@ export class AssetsController {
     @Query("scope") scope?: string,
   ) {
     return this.assets.upload(file, folder, scope);
+  }
+
+  @Post("copies")
+  @ApiOperation({
+    summary: "Copy an existing CDN asset",
+    description:
+      "Creates a separate S3 object and asset record for another store or theme scope.",
+  })
+  @ApiBody({ type: CopyAssetDto })
+  @ApiOkResponse({ type: AssetResponseDto })
+  copy(@Body() dto: CopyAssetDto) {
+    return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope);
   }
 
   @Get()

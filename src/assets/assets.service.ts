@@ -8,7 +8,9 @@ import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -101,6 +103,85 @@ export class AssetsService {
     );
     this.logger.log(`Stored ${asset.id} (${file.size}B) at ${objectKey}`);
     return this.present(asset);
+  }
+
+  /**
+   * Gives another store or theme its own physical copy of a catalogue asset.
+   *
+   * Only this service's public host is accepted. That keeps the operation an
+   * S3-side copy and prevents this endpoint becoming a general URL fetcher.
+   */
+  async copy(sourceUrl: string, folder: string, scope: string) {
+    let parsed: URL;
+    try {
+      parsed = new URL(sourceUrl);
+    } catch {
+      throw new BadRequestException("Invalid source asset URL");
+    }
+    if (parsed.protocol !== "https:" || parsed.host !== this.publicHost) {
+      throw new BadRequestException("Source must belong to this asset service");
+    }
+
+    const objectKey = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
+    const source = await this.assets.findOne({ where: { objectKey } });
+
+    // Saving an existing theme should not manufacture a new file each time.
+    if (source?.scope === scope && source.folder === folder) {
+      return this.present(source);
+    }
+
+    /*
+     * Catalogue files are deployed with the API image, while asset metadata
+     * lives in this service's database. On a fresh production database an
+     * older CDN object can therefore exist in our bucket without having a row
+     * here. Read its trusted S3 metadata so it can still seed a new store.
+     * The host check above keeps this an operation on our own bucket; it never
+     * downloads an arbitrary external URL.
+     */
+    let contentType = source?.contentType;
+    let size = source?.size;
+    let originalName = source?.originalName;
+    if (!source) {
+      try {
+        const metadata = await this.client.send(
+          new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }),
+        );
+        contentType = metadata.ContentType;
+        size = metadata.ContentLength;
+        originalName = objectKey.split("/").pop() ?? "catalogue-image";
+      } catch {
+        throw new NotFoundException("Source asset not found");
+      }
+    }
+
+    const safeFolder = ALLOWED_FOLDERS.includes(folder) ? folder : "uploads";
+    const extension = contentType ? EXTENSION[contentType] : undefined;
+    if (!extension) throw new BadRequestException("Unsupported source asset type");
+    const targetKey = `${safeFolder}/${randomUUID()}.${extension}`;
+
+    await this.client.send(
+      new CopyObjectCommand({
+        Bucket: this.bucket,
+        CopySource: encodeURIComponent(`${this.bucket}/${objectKey}`).replace(/%2F/g, "/"),
+        Key: targetKey,
+        ContentType: contentType,
+        CacheControl: "public, max-age=31536000, immutable",
+        MetadataDirective: "REPLACE",
+      }),
+    );
+
+    const copy = await this.assets.save(
+      this.assets.create({
+        objectKey: targetKey,
+        contentType,
+        size: size ?? 0,
+        originalName: (originalName ?? "catalogue-image").slice(0, 255),
+        folder: safeFolder,
+        scope,
+      }),
+    );
+    this.logger.log(`Copied ${source?.id ?? objectKey} to ${copy.id} for ${scope}`);
+    return this.present(copy);
   }
 
   async findOne(id: string) {

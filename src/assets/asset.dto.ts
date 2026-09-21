@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
+import { IsIn, IsString, IsUrl, Length } from "class-validator";
 
 /** The shape every asset endpoint returns. */
 export class AssetResponseDto {
@@ -74,4 +75,25 @@ export class ListAssetsQueryDto {
     example: 50,
   })
   limit?: number;
+}
+
+/** Makes an independently owned CDN object from an existing CDN asset. */
+export class CopyAssetDto {
+  @ApiProperty({
+    description: "Public CDN URL of an asset already owned by this service.",
+  })
+  @IsUrl({ protocols: ["https"], require_protocol: true })
+  sourceUrl: string;
+
+  @ApiProperty({
+    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "avatars"],
+  })
+  @IsString()
+  @IsIn(["products", "categories", "marketing", "branding", "ugc", "feed", "avatars"])
+  folder: string;
+
+  @ApiProperty({ example: "theme:acme:12" })
+  @IsString()
+  @Length(1, 190)
+  scope: string;
 }
