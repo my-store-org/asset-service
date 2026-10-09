@@ -6,7 +6,8 @@ import type { DataSource } from "typeorm";
 import { AppModule } from "./app.module";
 import { ensureDatabase } from "./database/ensure-database";
 
-const DEFAULT_PORTS = [3000, 3002, 3003];
+// 3004: the staff management app, which uploads profile pictures.
+const DEFAULT_PORTS = [3000, 3002, 3003, 3004];
 
 /**
  * localhost and 127.0.0.1 are distinct origins to a browser, so both are
