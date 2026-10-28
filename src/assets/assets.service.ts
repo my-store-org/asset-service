@@ -34,7 +34,7 @@ export const ALLOWED_TYPES = [
  * Only these kinds, each with its own folder and ceiling.
  */
 export const DIRECT_TYPES: Record<string, { ext: string; folder: string; max: number }> = {
-  "application/vnd.android.package-archive": { ext: "apk", folder: "apps", max: 300 * 1024 * 1024 },
+  "application/vnd.android.package-archive": { ext: "apk", folder: "apps", max: 500 * 1024 * 1024 },
 };
 /** How long a signed upload link works. */
 const DIRECT_LINK_SECONDS = 60 * 60;
