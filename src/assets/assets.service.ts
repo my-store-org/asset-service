@@ -14,6 +14,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "node:crypto";
 import { Asset } from "./asset.entity";
 
@@ -25,6 +26,20 @@ export const ALLOWED_TYPES = [
   "image/webp",
   "image/avif",
 ];
+
+/**
+ * Files too big to pass through the API and the proxies in front of it — the
+ * staff app's APK is ~80 MB — go from the browser straight to the bucket on
+ * a signed link (`signUpload`), then are registered here (`completeUpload`).
+ * Only these kinds, each with its own folder and ceiling.
+ */
+export const DIRECT_TYPES: Record<string, { ext: string; folder: string; max: number }> = {
+  "application/vnd.android.package-archive": { ext: "apk", folder: "apps", max: 300 * 1024 * 1024 },
+};
+/** How long a signed upload link works. */
+const DIRECT_LINK_SECONDS = 60 * 60;
+/** `apps/<uuid>/<name>.apk`: the uuid keeps keys unguessable, the name is what a download saves as. */
+const DIRECT_KEY = /^apps\/[0-9a-f-]{36}\/[A-Za-z0-9._-]{1,120}\.apk$/;
 
 const ALLOWED_FOLDERS = [
   // "avatars" is the people who run the shop, kept apart from "branding",
@@ -102,6 +117,64 @@ export class AssetsService {
       }),
     );
     this.logger.log(`Stored ${asset.id} (${file.size}B) at ${objectKey}`);
+    return this.present(asset);
+  }
+
+  /**
+   * A signed link the browser PUTs a large file to, straight into the bucket.
+   *
+   * The key is made here, so a caller cannot pick one; the file name in it is
+   * cleaned to safe characters and is what the download saves as. The browser
+   * must send the same Content-Type it was signed for.
+   */
+  async signUpload(contentType: string, size: number, fileName: string) {
+    const kind = DIRECT_TYPES[contentType];
+    if (!kind) throw new BadRequestException("Only an Android app (.apk) can be uploaded this way");
+    if (!Number.isInteger(size) || size <= 0) throw new BadRequestException("The file is empty");
+    if (size > kind.max) throw new BadRequestException(`The file is over ${Math.round(kind.max / 1024 / 1024)} MB`);
+    const stem = fileName.replace(/\.[^.]*$/, "").replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 100) || "app";
+    const objectKey = `${kind.folder}/${randomUUID()}/${stem}.${kind.ext}`;
+    const uploadUrl = await getSignedUrl(
+      this.client,
+      new PutObjectCommand({ Bucket: this.bucket, Key: objectKey, ContentType: contentType }),
+      { expiresIn: DIRECT_LINK_SECONDS },
+    );
+    return { uploadUrl, objectKey, contentType, expiresAt: new Date(Date.now() + DIRECT_LINK_SECONDS * 1000) };
+  }
+
+  /**
+   * Records a file the browser uploaded on a signed link, once it is really
+   * there: its type and size are read back from the bucket, not taken from the
+   * caller. One over its ceiling is deleted rather than kept.
+   */
+  async completeUpload(objectKey: string, scope = "") {
+    if (!DIRECT_KEY.test(objectKey)) throw new BadRequestException("Not an uploaded app file");
+    const existing = await this.assets.findOne({ where: { objectKey } });
+    if (existing) return this.present(existing);
+    let head;
+    try {
+      head = await this.client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: objectKey }));
+    } catch {
+      throw new NotFoundException("The upload did not arrive — try again");
+    }
+    const contentType = head.ContentType ?? "";
+    const kind = DIRECT_TYPES[contentType];
+    const size = head.ContentLength ?? 0;
+    if (!kind || size <= 0 || size > kind.max) {
+      await this.client.send(new DeleteObjectCommand({ Bucket: this.bucket, Key: objectKey })).catch(() => undefined);
+      throw new BadRequestException("That file is not an Android app within the size limit");
+    }
+    const asset = await this.assets.save(
+      this.assets.create({
+        objectKey,
+        contentType,
+        size,
+        originalName: objectKey.split("/").pop() ?? "",
+        folder: kind.folder,
+        scope: scope.slice(0, 190),
+      }),
+    );
+    this.logger.log(`Registered ${asset.id} (${size}B) at ${objectKey}`);
     return this.present(asset);
   }
 

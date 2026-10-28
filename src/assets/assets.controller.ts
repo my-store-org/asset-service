@@ -25,8 +25,10 @@ import {
 } from "@nestjs/swagger";
 import {
   AssetResponseDto,
+  CompleteUploadDto,
   CopyAssetDto,
   DeletedAssetDto,
+  SignUploadDto,
   UploadAssetDto,
 } from "./asset.dto";
 import { AssetsService, MAX_UPLOAD_BYTES } from "./assets.service";
@@ -84,6 +86,30 @@ export class AssetsController {
   @ApiOkResponse({ type: AssetResponseDto })
   copy(@Body() dto: CopyAssetDto) {
     return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope);
+  }
+
+  @Post("uploads")
+  @ApiOperation({
+    summary: "Sign a direct upload",
+    description:
+      "A one-hour link to PUT a large file (an Android APK) straight to the " +
+      "bucket, for files too big to pass through the API. Register it with " +
+      "POST /assets/uploads/complete once the PUT has finished.",
+  })
+  @ApiBody({ type: SignUploadDto })
+  signUpload(@Body() dto: SignUploadDto) {
+    return this.assets.signUpload(dto.contentType, dto.size, dto.fileName);
+  }
+
+  @Post("uploads/complete")
+  @ApiOperation({
+    summary: "Register a direct upload",
+    description: "Reads the uploaded file back from the bucket and records it as an asset.",
+  })
+  @ApiBody({ type: CompleteUploadDto })
+  @ApiOkResponse({ type: AssetResponseDto })
+  completeUpload(@Body() dto: CompleteUploadDto) {
+    return this.assets.completeUpload(dto.objectKey, dto.scope);
   }
 
   @Get()

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsIn, IsString, IsUrl, Length } from "class-validator";
+import { IsIn, IsInt, IsOptional, IsString, IsUrl, Length, Min } from "class-validator";
 
 /** The shape every asset endpoint returns. */
 export class AssetResponseDto {
@@ -75,6 +75,38 @@ export class ListAssetsQueryDto {
     example: 50,
   })
   limit?: number;
+}
+
+/** Asks for a signed link to upload a large file (an APK) straight to the bucket. */
+export class SignUploadDto {
+  @ApiProperty({ example: "application/vnd.android.package-archive" })
+  @IsString()
+  @Length(1, 100)
+  contentType: string;
+
+  @ApiProperty({ description: "Size in bytes.", example: 78568045 })
+  @IsInt()
+  @Min(1)
+  size: number;
+
+  @ApiProperty({ example: "Staff Portal.apk" })
+  @IsString()
+  @Length(1, 200)
+  fileName: string;
+}
+
+/** Registers a file uploaded on a signed link. */
+export class CompleteUploadDto {
+  @ApiProperty({ example: "apps/9a267d29-6482-4b88-acf0-6aa7c1f7cd72/Staff-Portal.apk" })
+  @IsString()
+  @Length(1, 512)
+  objectKey: string;
+
+  @ApiPropertyOptional({ example: "platform:app" })
+  @IsOptional()
+  @IsString()
+  @Length(0, 190)
+  scope?: string;
 }
 
 /** Makes an independently owned CDN object from an existing CDN asset. */
