@@ -17,6 +17,9 @@ export class AssetResponseDto {
   })
   url: string;
 
+  @ApiProperty({ description: "The bucket it is stored in.", example: "my-store-dev-bucket" })
+  bucket: string;
+
   @ApiProperty({ example: "image/png" })
   contentType: string;
 
@@ -32,7 +35,7 @@ export class AssetResponseDto {
   @ApiProperty({
     description: "Grouping folder.",
     example: "products",
-    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "uploads"],
+    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "avatars", "videos", "voice", "uploads", "apps"],
   })
   folder: string;
 
@@ -58,7 +61,7 @@ export class UploadAssetDto {
   @ApiProperty({
     type: "string",
     format: "binary",
-    description: "JPEG, PNG, WebP or AVIF. Max 15 MB.",
+    description: "An image (JPEG, PNG, WebP, AVIF — 15 MB), a video (MP4, WebM, MOV — 200 MB) or audio (MP3, M4A, AAC, OGG, WebM, WAV — 50 MB).",
   })
   file: unknown;
 }
@@ -93,6 +96,15 @@ export class SignUploadDto {
   @IsString()
   @Length(1, 200)
   fileName: string;
+
+  @ApiPropertyOptional({
+    description: "The caller's own bucket (S3_BUCKET or one in S3_BUCKETS); left out, the default.",
+    example: "my-store-dev-bucket",
+  })
+  @IsOptional()
+  @IsString()
+  @Length(3, 63)
+  bucket?: string;
 }
 
 /** Registers a file uploaded on a signed link. */
@@ -107,6 +119,15 @@ export class CompleteUploadDto {
   @IsString()
   @Length(0, 190)
   scope?: string;
+
+  @ApiPropertyOptional({
+    description: "The bucket it was signed for (S3_BUCKET or one in S3_BUCKETS); left out, the default.",
+    example: "my-store-dev-bucket",
+  })
+  @IsOptional()
+  @IsString()
+  @Length(3, 63)
+  bucket?: string;
 }
 
 /** Makes an independently owned CDN object from an existing CDN asset. */
@@ -118,14 +139,23 @@ export class CopyAssetDto {
   sourceUrl: string;
 
   @ApiProperty({
-    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "avatars"],
+    enum: ["products", "categories", "marketing", "branding", "ugc", "feed", "avatars", "videos", "voice"],
   })
   @IsString()
-  @IsIn(["products", "categories", "marketing", "branding", "ugc", "feed", "avatars"])
+  @IsIn(["products", "categories", "marketing", "branding", "ugc", "feed", "avatars", "videos", "voice"])
   folder: string;
 
   @ApiProperty({ example: "theme:acme:12" })
   @IsString()
   @Length(1, 190)
   scope: string;
+
+  @ApiPropertyOptional({
+    description: "The caller's own bucket (S3_BUCKET or one in S3_BUCKETS); left out, the source's own bucket.",
+    example: "my-store-dev-bucket",
+  })
+  @IsOptional()
+  @IsString()
+  @Length(3, 63)
+  bucket?: string;
 }

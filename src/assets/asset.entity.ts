@@ -9,6 +9,14 @@ export class Asset {
   @PrimaryGeneratedColumn("uuid")
   id: string;
 
+  /**
+   * The bucket it is in. One service serves several projects, each with its
+   * own bucket; rows from before that are in the default one.
+   */
+  @Index()
+  @Column({ length: 63, default: "" })
+  bucket: string;
+
   /** S3 object key. Never exposed outside this service. */
   @Column({ name: "object_key", length: 512, unique: true })
   objectKey: string;

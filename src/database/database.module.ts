@@ -4,6 +4,7 @@ import { TypeOrmModule } from "@nestjs/typeorm";
 import { Asset } from "../assets/asset.entity";
 import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-CreateAssetsTable";
 import { AddAssetScope1757300000000 } from "../migrations/1757300000000-AddAssetScope";
+import { AddAssetBucket1761800000000 } from "../migrations/1761800000000-AddAssetBucket";
 
 /**
  * Migrations are listed explicitly rather than by glob: the compiled build
@@ -14,6 +15,7 @@ import { AddAssetScope1757300000000 } from "../migrations/1757300000000-AddAsset
 const MIGRATIONS = [
   CreateAssetsTable1756704000000,
   AddAssetScope1757300000000,
+  AddAssetBucket1761800000000,
 ];
 
 @Module({

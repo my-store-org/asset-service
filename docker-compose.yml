@@ -78,7 +78,9 @@ services:
       # The service refuses to start without a region. Uploads fail without a
       # bucket and credentials.
       AWS_REGION: ${AWS_REGION:?set AWS_REGION in .env}
-      S3_BUCKET: ${S3_BUCKET:-}
+      S3_BUCKET: ${S3_BUCKET:-my-store-dev-bucket}
+      # Other projects' buckets this service may write to: "name" or "name=cdn-host", comma-separated; "*" for any.
+      S3_BUCKETS: ${S3_BUCKETS:-}
       # Stored on every asset row, so changing it later orphans existing
       # images rather than moving them.
       S3_PUBLIC_HOST: ${S3_PUBLIC_HOST:-}

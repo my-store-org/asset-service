@@ -12,6 +12,9 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { diskStorage } from "multer";
+import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import {
   ApiBadRequestResponse,
   ApiBody,
@@ -50,8 +53,8 @@ export class AssetsController {
   @ApiQuery({
     name: "folder",
     required: false,
-    enum: ["products", "categories", "marketing", "ugc", "feed"],
-    description: "Grouping folder. Unknown values fall back to 'uploads'.",
+    enum: ["products", "categories", "marketing", "ugc", "feed", "videos", "voice"],
+    description: "Grouping folder. Unknown values fall back to 'uploads' (images), 'videos' or 'voice'.",
   })
   @ApiQuery({
     name: "scope",
@@ -61,19 +64,32 @@ export class AssetsController {
       "Who the image belongs to. Listing filters on it, so a shop sees only " +
       "its own uploads and a design only the ones made for it.",
   })
+  @ApiQuery({
+    name: "bucket",
+    required: false,
+    example: "my-store-dev-bucket",
+    description:
+      "The caller's own bucket, for a project other than the default. Must be " +
+      "S3_BUCKET or listed in S3_BUCKETS; left out, the default bucket.",
+  })
   @ApiOkResponse({ type: AssetResponseDto })
   @ApiBadRequestResponse({
-    description: "Missing file, unsupported type, or over the 15 MB limit.",
+    description: "Missing file, unsupported type, over its size limit (image 15 MB, video 200 MB, audio 50 MB), or a bucket that is not allowed.",
   })
   @UseInterceptors(
-    FileInterceptor("file", { limits: { fileSize: MAX_UPLOAD_BYTES } }),
+    FileInterceptor("file", {
+      // To a temporary file, not memory: a 200 MB video would otherwise sit in RAM. The service deletes it.
+      storage: diskStorage({ destination: tmpdir(), filename: (_req, _file, done) => done(null, `asset-upload-${randomUUID()}`) }),
+      limits: { fileSize: MAX_UPLOAD_BYTES },
+    }),
   )
   upload(
     @UploadedFile() file: Express.Multer.File,
     @Query("folder") folder?: string,
     @Query("scope") scope?: string,
+    @Query("bucket") bucket?: string,
   ) {
-    return this.assets.upload(file, folder, scope);
+    return this.assets.upload(file, folder, scope, bucket);
   }
 
   @Post("copies")
@@ -85,7 +101,7 @@ export class AssetsController {
   @ApiBody({ type: CopyAssetDto })
   @ApiOkResponse({ type: AssetResponseDto })
   copy(@Body() dto: CopyAssetDto) {
-    return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope);
+    return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope, dto.bucket);
   }
 
   @Post("uploads")
@@ -98,7 +114,7 @@ export class AssetsController {
   })
   @ApiBody({ type: SignUploadDto })
   signUpload(@Body() dto: SignUploadDto) {
-    return this.assets.signUpload(dto.contentType, dto.size, dto.fileName);
+    return this.assets.signUpload(dto.contentType, dto.size, dto.fileName, dto.bucket);
   }
 
   @Post("uploads/complete")
@@ -109,7 +125,7 @@ export class AssetsController {
   @ApiBody({ type: CompleteUploadDto })
   @ApiOkResponse({ type: AssetResponseDto })
   completeUpload(@Body() dto: CompleteUploadDto) {
-    return this.assets.completeUpload(dto.objectKey, dto.scope);
+    return this.assets.completeUpload(dto.objectKey, dto.scope, dto.bucket);
   }
 
   @Get()
@@ -120,13 +136,15 @@ export class AssetsController {
   @ApiQuery({ name: "folder", required: false, example: "products" })
   @ApiQuery({ name: "limit", required: false, example: 50 })
   @ApiQuery({ name: "scope", required: false, example: "store:acme" })
+  @ApiQuery({ name: "bucket", required: false, example: "my-store-dev-bucket", description: "Only that bucket's assets." })
   @ApiOkResponse({ type: AssetResponseDto, isArray: true })
   findAll(
     @Query("folder") folder?: string,
     @Query("limit") limit?: string,
     @Query("scope") scope?: string,
+    @Query("bucket") bucket?: string,
   ) {
-    return this.assets.findAll(folder, limit ? Number(limit) : undefined, scope);
+    return this.assets.findAll(folder, limit ? Number(limit) : undefined, scope, bucket);
   }
 
   @Get(":id")

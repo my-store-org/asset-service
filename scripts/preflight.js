@@ -71,10 +71,13 @@ async function main() {
 
   // 4. Variables read before the port is bound. Each missing one throws
   //    during boot: DB_NAME in ensureDatabase, AWS_REGION in AssetsService.
-  for (const key of ["DB_NAME", "DB_USER", "DB_HOST", "AWS_REGION", "S3_BUCKET"]) {
+  for (const key of ["DB_NAME", "DB_USER", "DB_HOST", "AWS_REGION"]) {
     if (process.env[key]) ok(`env ${key}`, key.startsWith("DB_") ? process.env[key] : "set");
     else fail(`env ${key}`, "not set in this environment");
   }
+  // The default bucket: S3_BUCKET, else my-store-dev-bucket. Others a caller may name: S3_BUCKETS.
+  ok("env S3_BUCKET", process.env.S3_BUCKET || "my-store-dev-bucket (default)");
+  if (process.env.S3_BUCKETS) ok("env S3_BUCKETS", process.env.S3_BUCKETS);
 
   if (process.env.PORT) {
     console.log(`  NOTE  env PORT is set to ${process.env.PORT} — on managed hosting, leave it unset so the platform assigns it`);
