@@ -20,6 +20,7 @@ import { createReadStream } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { Asset } from "./asset.entity";
 import { Buckets } from "./buckets";
+import { StoreBuckets } from "./store-buckets";
 
 const MB = 1024 * 1024;
 
@@ -91,6 +92,8 @@ export class AssetsService {
   private readonly client: S3Client;
   /** The buckets callers may name, and each one's public host. */
   private readonly buckets: Buckets;
+  /** Each store's own bucket, for a file uploaded with that store's scope. */
+  private readonly storeBuckets: StoreBuckets;
 
   constructor(
     @InjectRepository(Asset) private readonly assets: Repository<Asset>,
@@ -107,20 +110,30 @@ export class AssetsService {
       publicHost: config.get<string>("S3_PUBLIC_HOST"),
       region,
     });
+    this.storeBuckets = new StoreBuckets(config.get<string>("STORE_BUCKETS_URL"));
     const b = this.buckets.list();
-    this.logger.log(`Buckets: ${b.default} (default)${b.others.length ? `, ${b.others.join(", ")}` : ""}${b.any ? ", and any other (S3_BUCKETS=*)" : ""}`);
+    this.logger.log(`Buckets: ${b.default} (default)${b.others.length ? `, ${b.others.join(", ")}` : ""}${b.any ? ", and any other (S3_BUCKETS=*)" : ""}${this.storeBuckets.enabled ? "; each store's own, asked of the API" : ""}`);
     this.client =
       accessKeyId && secretAccessKey
         ? new S3Client({ region, credentials: { accessKeyId, secretAccessKey } })
         : new S3Client({ region });
   }
 
-  /** `bucket`: the caller's own bucket (one of those allowed); the default when none is named. */
+  /**
+   * The bucket a file goes to: the one the caller names (if allowed), else
+   * the store's own when the scope is a store's, else the default.
+   */
+  private async bucketFor(bucketName: string | undefined, scope: string) {
+    if (bucketName?.trim()) return this.buckets.pick(bucketName);
+    return (await this.storeBuckets.forScope(scope)) ?? this.buckets.default;
+  }
+
+  /** `bucket`: the caller's own bucket (one of those allowed); else the store's own, else the default. */
   async upload(file: Express.Multer.File, folder = "uploads", scope = "", bucketName?: string) {
-    const bucket = this.buckets.pick(bucketName);
     if (!file) throw new BadRequestException("No file uploaded");
     // The controller writes it to a temporary file (a 200 MB video is not held in memory); gone once handled.
     try {
+      const bucket = await this.bucketFor(bucketName, scope);
       const media = MEDIA[file.mimetype];
       if (!media) {
         throw new BadRequestException(
@@ -246,8 +259,8 @@ export class AssetsService {
     if (!from) {
       throw new BadRequestException("Source must belong to this asset service");
     }
-    // The copy goes to the bucket asked for, else next to its source.
-    const bucket = bucketName ? this.buckets.pick(bucketName) : from;
+    // The copy goes to the bucket asked for, else its store's own, else next to its source.
+    const bucket = bucketName ? this.buckets.pick(bucketName) : ((await this.storeBuckets.forScope(scope)) ?? from);
 
     const objectKey = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
     const source = await this.assets.findOne({ where: { objectKey } });

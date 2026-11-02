@@ -84,6 +84,10 @@ services:
       # Stored on every asset row, so changing it later orphans existing
       # images rather than moving them.
       S3_PUBLIC_HOST: ${S3_PUBLIC_HOST:-}
+      # One store, one bucket: where the API is, to ask which bucket a store's
+      # files go to (an upload scoped store:<slug> or theme:<slug>:…). Empty:
+      # every file goes to S3_BUCKET, as before.
+      STORE_BUCKETS_URL: ${STORE_BUCKETS_URL:-https://api.my-store.shop}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
 
@@ -91,6 +95,10 @@ services:
     ports:
       # Loopback only; nginx on the host terminates TLS and proxies here.
       - "127.0.0.1:3003:3003"
+    extra_hosts:
+      # The API is on this same host, behind nginx. Skips Docker's embedded DNS,
+      # which can answer EAI_AGAIN on a cold cache; TLS still verifies.
+      - "api.my-store.shop:host-gateway"
 
 volumes:
   mariadb-data:

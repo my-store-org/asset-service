@@ -7,6 +7,13 @@ export const FALLBACK_BUCKET = "my-store-dev-bucket";
 const BUCKET_NAME = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 
 /**
+ * A store's own bucket, as the API names it: `<store>-my-store-assets-<id>`.
+ * Always allowed, without listing each one in S3_BUCKETS — a new store gets
+ * one every time.
+ */
+export const STORE_BUCKET = /^(?:[a-z0-9-]+-)?my-store-assets-\d+$/;
+
+/**
  * Which buckets this service may write to, and the public host of each.
  *
  * One service, several projects: each caller may name its own bucket on a
@@ -47,7 +54,7 @@ export class Buckets {
     const wanted = (name ?? "").trim();
     if (!wanted) return this.default;
     if (!BUCKET_NAME.test(wanted)) throw new BadRequestException(`"${wanted}" is not a bucket name`);
-    if (!this.any && !this.hosts.has(wanted)) throw new BadRequestException(`Bucket "${wanted}" is not one this service writes to`);
+    if (!this.any && !this.hosts.has(wanted) && !STORE_BUCKET.test(wanted)) throw new BadRequestException(`Bucket "${wanted}" is not one this service writes to`);
     return wanted;
   }
 
@@ -61,7 +68,7 @@ export class Buckets {
     for (const [name] of this.hosts) if (this.host(name) === host) return name;
     // S3's own address of a bucket we may use (with "*", any of them).
     const m = /^([a-z0-9][a-z0-9.-]{1,61}[a-z0-9])\.s3[.-][a-z0-9-]*\.?amazonaws\.com$/.exec(host);
-    if (m && (this.any || this.hosts.has(m[1]))) return m[1];
+    if (m && (this.any || this.hosts.has(m[1]) || STORE_BUCKET.test(m[1]))) return m[1];
     return null;
   }
 
