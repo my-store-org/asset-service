@@ -93,6 +93,11 @@ async function bootstrap() {
       )
       .setVersion("1.0")
       .addTag("assets", "Upload, read and delete stored files")
+      .addTag("refs", "What an organization's records use, so unused files are deleted")
+      .addTag("clients", "Organizations' keys and secrets (needs x-admin-key)")
+      .addApiKey({ type: "apiKey", in: "header", name: "x-client-key" }, "client-key")
+      .addApiKey({ type: "apiKey", in: "header", name: "x-client-secret" }, "client-secret")
+      .addApiKey({ type: "apiKey", in: "header", name: "x-admin-key" }, "admin-key")
       .addServer(`http://localhost:${port}`, "Local")
       .build();
 

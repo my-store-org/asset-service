@@ -1,5 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsIn, IsInt, IsOptional, IsString, IsUrl, Length, Min } from "class-validator";
+import { Type } from "class-transformer";
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUrl,
+  IsUUID,
+  Length,
+  Min,
+  ValidateNested,
+} from "class-validator";
 
 /** The shape every asset endpoint returns. */
 export class AssetResponseDto {
@@ -158,4 +171,26 @@ export class CopyAssetDto {
   @IsString()
   @Length(3, 63)
   bucket?: string;
+}
+
+export class RecordRefDto {
+  @ApiProperty({ description: "The caller's own name for the record.", example: "loan:13" })
+  @IsString()
+  @Length(1, 190)
+  ref: string;
+
+  @ApiProperty({ type: [String], description: "The files it uses.", example: ["9a267d29-6482-4b88-acf0-6aa7c1f7cd72"] })
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @IsUUID("all", { each: true })
+  assetIds: string[];
+}
+
+export class SetRefsDto {
+  @ApiProperty({ type: [RecordRefDto] })
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @ValidateNested({ each: true })
+  @Type(() => RecordRefDto)
+  refs: RecordRefDto[];
 }

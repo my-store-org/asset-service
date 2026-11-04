@@ -53,6 +53,17 @@ export class Asset {
   @Column({ length: 190, default: "" })
   scope: string;
 
+  /**
+   * The organization (client) it belongs to; null on files stored without a key.
+   * Only that client can see, list, copy or delete it.
+   */
+  @Column({ name: "client_id", type: "varchar", length: 36, nullable: true })
+  clientId: string | null;
+
+  /** SHA-256 of the contents, so a client's same file isn't stored twice. */
+  @Column({ type: "char", length: 64, nullable: true })
+  sha256: string | null;
+
   @Column({ name: "created_at", type: "datetime", default: () => "CURRENT_TIMESTAMP" })
   createdAt: Date;
 }

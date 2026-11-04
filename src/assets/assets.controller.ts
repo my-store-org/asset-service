@@ -6,8 +6,10 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Put,
   Query,
   Redirect,
+  UnauthorizedException,
   UploadedFile,
   UseInterceptors,
 } from "@nestjs/common";
@@ -24,19 +26,25 @@ import {
   ApiOperation,
   ApiParam,
   ApiQuery,
+  ApiSecurity,
   ApiTags,
 } from "@nestjs/swagger";
+import { Caller } from "../clients/caller";
+import type { Client } from "../clients/client.entity";
 import {
   AssetResponseDto,
   CompleteUploadDto,
   CopyAssetDto,
   DeletedAssetDto,
+  SetRefsDto,
   SignUploadDto,
   UploadAssetDto,
 } from "./asset.dto";
 import { AssetsService, MAX_UPLOAD_BYTES } from "./assets.service";
 
 @ApiTags("assets")
+@ApiSecurity("client-key")
+@ApiSecurity("client-secret")
 @Controller("assets")
 export class AssetsController {
   constructor(private readonly assets: AssetsService) {}
@@ -88,8 +96,9 @@ export class AssetsController {
     @Query("folder") folder?: string,
     @Query("scope") scope?: string,
     @Query("bucket") bucket?: string,
+    @Caller() caller?: Client | null,
   ) {
-    return this.assets.upload(file, folder, scope, bucket);
+    return this.assets.upload(file, folder, scope, bucket, caller ?? null);
   }
 
   @Post("copies")
@@ -100,8 +109,8 @@ export class AssetsController {
   })
   @ApiBody({ type: CopyAssetDto })
   @ApiOkResponse({ type: AssetResponseDto })
-  copy(@Body() dto: CopyAssetDto) {
-    return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope, dto.bucket);
+  copy(@Body() dto: CopyAssetDto, @Caller() caller: Client | null) {
+    return this.assets.copy(dto.sourceUrl, dto.folder, dto.scope, dto.bucket, caller);
   }
 
   @Post("uploads")
@@ -113,8 +122,8 @@ export class AssetsController {
       "POST /assets/uploads/complete once the PUT has finished.",
   })
   @ApiBody({ type: SignUploadDto })
-  signUpload(@Body() dto: SignUploadDto) {
-    return this.assets.signUpload(dto.contentType, dto.size, dto.fileName, dto.bucket);
+  signUpload(@Body() dto: SignUploadDto, @Caller() caller: Client | null) {
+    return this.assets.signUpload(dto.contentType, dto.size, dto.fileName, dto.bucket, caller);
   }
 
   @Post("uploads/complete")
@@ -124,8 +133,8 @@ export class AssetsController {
   })
   @ApiBody({ type: CompleteUploadDto })
   @ApiOkResponse({ type: AssetResponseDto })
-  completeUpload(@Body() dto: CompleteUploadDto) {
-    return this.assets.completeUpload(dto.objectKey, dto.scope, dto.bucket);
+  completeUpload(@Body() dto: CompleteUploadDto, @Caller() caller: Client | null) {
+    return this.assets.completeUpload(dto.objectKey, dto.scope, dto.bucket, caller);
   }
 
   @Get()
@@ -143,8 +152,9 @@ export class AssetsController {
     @Query("limit") limit?: string,
     @Query("scope") scope?: string,
     @Query("bucket") bucket?: string,
+    @Caller() caller?: Client | null,
   ) {
-    return this.assets.findAll(folder, limit ? Number(limit) : undefined, scope, bucket);
+    return this.assets.findAll(folder, limit ? Number(limit) : undefined, scope, bucket, caller ?? null);
   }
 
   @Get(":id")
@@ -152,8 +162,8 @@ export class AssetsController {
   @ApiParam({ name: "id", format: "uuid" })
   @ApiOkResponse({ type: AssetResponseDto })
   @ApiNotFoundResponse({ description: "No asset with that id." })
-  findOne(@Param("id", ParseUUIDPipe) id: string) {
-    return this.assets.findOne(id);
+  findOne(@Param("id", ParseUUIDPipe) id: string, @Caller() caller: Client | null) {
+    return this.assets.findOne(id, caller);
   }
 
   @Get(":id/raw")
@@ -165,8 +175,8 @@ export class AssetsController {
   @ApiParam({ name: "id", format: "uuid" })
   @ApiNotFoundResponse({ description: "No asset with that id." })
   @Redirect()
-  async raw(@Param("id", ParseUUIDPipe) id: string) {
-    const asset = await this.assets.findOne(id);
+  async raw(@Param("id", ParseUUIDPipe) id: string, @Caller() caller: Client | null) {
+    const asset = await this.assets.findOne(id, caller);
     return { url: asset.url, statusCode: 302 };
   }
 
@@ -180,7 +190,43 @@ export class AssetsController {
   @ApiParam({ name: "id", format: "uuid" })
   @ApiOkResponse({ type: DeletedAssetDto })
   @ApiNotFoundResponse({ description: "No asset with that id." })
-  remove(@Param("id", ParseUUIDPipe) id: string) {
-    return this.assets.remove(id);
+  remove(@Param("id", ParseUUIDPipe) id: string, @Caller() caller: Client | null) {
+    return this.assets.remove(id, caller);
   }
+}
+
+/** What an organization's records use, so a file is deleted only once nothing does. */
+@ApiTags("refs")
+@ApiSecurity("client-key")
+@ApiSecurity("client-secret")
+@Controller("refs")
+export class RefsController {
+  constructor(private readonly assets: AssetsService) {}
+
+  @Put()
+  @ApiOperation({
+    summary: "Set what records use",
+    description:
+      "Each record (\"loan:13\") now uses exactly these files; an empty list for one that " +
+      "is gone. Files no record uses any more are deleted. Needs a client key.",
+  })
+  @ApiBody({ type: SetRefsDto })
+  set(@Body() dto: SetRefsDto, @Caller() caller: Client | null) {
+    return this.assets.setRefs(needKey(caller), dto.refs, "set");
+  }
+
+  @Post()
+  @ApiOperation({
+    summary: "Add what records use",
+    description: "Adds to what is known and never deletes anything: for catching up, safe to repeat. Needs a client key.",
+  })
+  @ApiBody({ type: SetRefsDto })
+  add(@Body() dto: SetRefsDto, @Caller() caller: Client | null) {
+    return this.assets.setRefs(needKey(caller), dto.refs, "add");
+  }
+}
+
+function needKey(caller: Client | null): Client {
+  if (!caller) throw new UnauthorizedException("Send x-client-key and x-client-secret");
+  return caller;
 }

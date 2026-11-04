@@ -1,6 +1,8 @@
 import { config } from "dotenv";
 import { DataSource } from "typeorm";
 import { Asset } from "../assets/asset.entity";
+import { AssetRef } from "../assets/asset-ref.entity";
+import { Client } from "../clients/client.entity";
 
 // Used by the TypeORM CLI (npm run migration:generate / migration:run).
 // Nest loads its own configuration at runtime; this only serves the CLI.
@@ -13,7 +15,7 @@ export default new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [Asset],
+  entities: [Asset, AssetRef, Client],
   migrations: ["src/migrations/*.ts"],
   charset: "utf8mb4",
   timezone: "Z",

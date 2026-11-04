@@ -1,23 +1,29 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
+  OnApplicationBootstrap,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { In, IsNull, Repository } from "typeorm";
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { unlink } from "node:fs/promises";
+import type { Readable } from "node:stream";
+import type { Client } from "../clients/client.entity";
+import { AssetRef } from "./asset-ref.entity";
 import { Asset } from "./asset.entity";
 import { Buckets } from "./buckets";
 import { StoreBuckets } from "./store-buckets";
@@ -86,8 +92,18 @@ const ALLOWED_FOLDERS = [
 ];
 
 
+/** The organization calling (by its key), or null for a caller without one. */
+type Caller = Client | null;
+
+/** SHA-256 of a stream's bytes, read chunk by chunk (a 200 MB video is never held in memory). */
+async function hashStream(stream: AsyncIterable<Uint8Array>): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest("hex");
+}
+
 @Injectable()
-export class AssetsService {
+export class AssetsService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AssetsService.name);
   private readonly client: S3Client;
   /** The buckets callers may name, and each one's public host. */
@@ -97,6 +113,7 @@ export class AssetsService {
 
   constructor(
     @InjectRepository(Asset) private readonly assets: Repository<Asset>,
+    @InjectRepository(AssetRef) private readonly refs: Repository<AssetRef>,
     config: ConfigService,
   ) {
     const region = config.get<string>("AWS_REGION");
@@ -119,21 +136,61 @@ export class AssetsService {
         : new S3Client({ region });
   }
 
+  /** A bucket this service may write to (refused otherwise). */
+  checkBucket(name: string) {
+    return this.buckets.pick(name);
+  }
+
+  get defaultBucket() {
+    return this.buckets.default;
+  }
+
+  /** Files in [bucket] that belong to nobody become [clientId]'s. Returns how many. */
+  async claimUnowned(bucket: string, clientId: string) {
+    const result = await this.assets.update({ bucket, clientId: IsNull() }, { clientId });
+    void this.fillFingerprints();
+    return result.affected ?? 0;
+  }
+
   /**
-   * The bucket a file goes to: the one the caller names (if allowed), else
-   * the store's own when the scope is a store's, else the default.
+   * Whether [caller] may see [asset]: an organization only its own files, a caller
+   * without a key only files that belong to no organization.
    */
-  private async bucketFor(bucketName: string | undefined, scope: string) {
+  private mine(asset: Asset, caller: Caller) {
+    return caller ? asset.clientId === caller.id : !asset.clientId;
+  }
+
+  /** The asset with this id, if [caller] may see it; otherwise not found (it isn't said that it exists). */
+  private async owned(id: string, caller: Caller) {
+    const asset = await this.assets.findOne({ where: { id } });
+    if (!asset || !this.mine(asset, caller)) throw new NotFoundException(`Asset ${id} not found`);
+    return asset;
+  }
+
+  /**
+   * The bucket a file goes to: an organization's own; else the one the caller
+   * names (if allowed), else the store's own when the scope is a store's, else
+   * the default.
+   */
+  private async bucketFor(bucketName: string | undefined, scope: string, caller: Caller = null) {
+    if (caller) return caller.bucket;
     if (bucketName?.trim()) return this.buckets.pick(bucketName);
     return (await this.storeBuckets.forScope(scope)) ?? this.buckets.default;
   }
 
-  /** `bucket`: the caller's own bucket (one of those allowed); else the store's own, else the default. */
-  async upload(file: Express.Multer.File, folder = "uploads", scope = "", bucketName?: string) {
+  /**
+   * `bucket`: the caller's own bucket (one of those allowed); else the store's own, else the default.
+   *
+   * An organization's upload goes to its own bucket, and the same file (same SHA-256 of
+   * its contents) it stored before is not stored again: that one comes back, with
+   * `duplicate: true`, so it takes space only once. (Only for organizations: they say
+   * which files they use, so a shared one is kept until nothing uses it.)
+   */
+  async upload(file: Express.Multer.File, folder = "uploads", scope = "", bucketName?: string, caller: Caller = null) {
     if (!file) throw new BadRequestException("No file uploaded");
     // The controller writes it to a temporary file (a 200 MB video is not held in memory); gone once handled.
     try {
-      const bucket = await this.bucketFor(bucketName, scope);
+      const bucket = await this.bucketFor(bucketName, scope, caller);
       const media = MEDIA[file.mimetype];
       if (!media) {
         throw new BadRequestException(
@@ -144,6 +201,18 @@ export class AssetsService {
         throw new BadRequestException(`${{ image: "An image", video: "A video", audio: "An audio file" }[media.kind]} can be up to ${limitText(media.max)}`);
       }
       const safeFolder = ALLOWED_FOLDERS.includes(folder) ? folder : DEFAULT_FOLDER[media.kind];
+
+      let sha256: string | null = null;
+      if (caller) {
+        sha256 = file.path
+          ? await hashStream(createReadStream(file.path))
+          : createHash("sha256").update(file.buffer).digest("hex");
+        const same = await this.assets.findOne({ where: { clientId: caller.id, bucket, sha256 } });
+        if (same) {
+          this.logger.log(`Same file as ${same.id} for ${caller.name}; not stored again`);
+          return { ...this.present(same), originalName: file.originalname?.slice(0, 255) || same.originalName, duplicate: true };
+        }
+      }
 
       // The key is service-generated so a caller can never overwrite another
       // asset by choosing a path.
@@ -171,10 +240,12 @@ export class AssetsService {
           // Trusted as given: the caller knows whose file this is, and the tag
           // is only ever compared for equality, never interpreted here.
           scope: scope.slice(0, 190),
+          clientId: caller?.id ?? null,
+          sha256,
         }),
       );
-      this.logger.log(`Stored ${asset.id} (${file.size}B) at ${bucket}/${objectKey}`);
-      return this.present(asset);
+      this.logger.log(`Stored ${asset.id} (${file.size}B) at ${bucket}/${objectKey}${caller ? ` for ${caller.name}` : ""}`);
+      return { ...this.present(asset), duplicate: false };
     } finally {
       if (file.path) await unlink(file.path).catch(() => undefined);
     }
@@ -187,8 +258,8 @@ export class AssetsService {
    * cleaned to safe characters and is what the download saves as. The browser
    * must send the same Content-Type it was signed for.
    */
-  async signUpload(contentType: string, size: number, fileName: string, bucketName?: string) {
-    const bucket = this.buckets.pick(bucketName);
+  async signUpload(contentType: string, size: number, fileName: string, bucketName?: string, caller: Caller = null) {
+    const bucket = caller ? caller.bucket : this.buckets.pick(bucketName);
     const kind = DIRECT_TYPES[contentType];
     if (!kind) throw new BadRequestException("Only an Android app (.apk), a video or audio can be uploaded this way");
     if (!Number.isInteger(size) || size <= 0) throw new BadRequestException("The file is empty");
@@ -208,11 +279,14 @@ export class AssetsService {
    * there: its type and size are read back from the bucket, not taken from the
    * caller. One over its ceiling is deleted rather than kept.
    */
-  async completeUpload(objectKey: string, scope = "", bucketName?: string) {
-    const bucket = this.buckets.pick(bucketName);
+  async completeUpload(objectKey: string, scope = "", bucketName?: string, caller: Caller = null) {
+    const bucket = caller ? caller.bucket : this.buckets.pick(bucketName);
     if (!DIRECT_KEY.test(objectKey)) throw new BadRequestException("Not a file uploaded on a signed link");
     const existing = await this.assets.findOne({ where: { objectKey } });
-    if (existing) return this.present(existing);
+    if (existing) {
+      if (!this.mine(existing, caller)) throw new NotFoundException("The upload did not arrive — try again");
+      return this.present(existing);
+    }
     let head;
     try {
       head = await this.client.send(new HeadObjectCommand({ Bucket: bucket, Key: objectKey }));
@@ -235,8 +309,10 @@ export class AssetsService {
         originalName: objectKey.split("/").pop() ?? "",
         folder: kind.folder,
         scope: scope.slice(0, 190),
+        clientId: caller?.id ?? null,
       }),
     );
+    if (caller) void this.fillFingerprints();
     this.logger.log(`Registered ${asset.id} (${size}B) at ${objectKey}`);
     return this.present(asset);
   }
@@ -247,7 +323,7 @@ export class AssetsService {
    * Only this service's public host is accepted. That keeps the operation an
    * S3-side copy and prevents this endpoint becoming a general URL fetcher.
    */
-  async copy(sourceUrl: string, folder: string, scope: string, bucketName?: string) {
+  async copy(sourceUrl: string, folder: string, scope: string, bucketName?: string, caller: Caller = null) {
     let parsed: URL;
     try {
       parsed = new URL(sourceUrl);
@@ -259,14 +335,18 @@ export class AssetsService {
     if (!from) {
       throw new BadRequestException("Source must belong to this asset service");
     }
-    // The copy goes to the bucket asked for, else its store's own, else next to its source.
-    const bucket = bucketName ? this.buckets.pick(bucketName) : ((await this.storeBuckets.forScope(scope)) ?? from);
+    // The copy goes to an organization's own bucket; else the bucket asked for, else its store's own, else next to its source.
+    const bucket = caller
+      ? caller.bucket
+      : bucketName ? this.buckets.pick(bucketName) : ((await this.storeBuckets.forScope(scope)) ?? from);
 
     const objectKey = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
     const source = await this.assets.findOne({ where: { objectKey } });
+    // Another organization's file can't be copied (nor, by an organization, a file with no row here).
+    if (source ? !this.mine(source, caller) : caller) throw new NotFoundException("Source asset not found");
 
     // Saving an existing theme should not manufacture a new file each time.
-    if (source?.scope === scope && source.folder === folder && this.bucketOf(source) === bucket) {
+    if (source?.scope === scope && source.folder === folder && this.bucketOf(source) === bucket && !caller) {
       return this.present(source);
     }
 
@@ -319,16 +399,16 @@ export class AssetsService {
         originalName: (originalName ?? "catalogue-image").slice(0, 255),
         folder: safeFolder,
         scope,
+        clientId: caller?.id ?? null,
+        sha256: source?.sha256 ?? null,
       }),
     );
     this.logger.log(`Copied ${source?.id ?? objectKey} to ${copy.id} for ${scope}`);
     return this.present(copy);
   }
 
-  async findOne(id: string) {
-    const asset = await this.assets.findOne({ where: { id } });
-    if (!asset) throw new NotFoundException(`Asset ${id} not found`);
-    return this.present(asset);
+  async findOne(id: string, caller: Caller = null) {
+    return this.present(await this.owned(id, caller));
   }
 
   /**
@@ -338,11 +418,13 @@ export class AssetsService {
    * still returns everything — the service's own tooling wants that, and the
    * endpoint is not the place to decide a caller is untrustworthy.
    */
-  async findAll(folder?: string, limit = 50, scope?: string, bucketName?: string) {
+  async findAll(folder?: string, limit = 50, scope?: string, bucketName?: string, caller: Caller = null) {
     // A bucket named: only its assets (rows from before buckets count as the default's).
     const bucket = bucketName ? this.buckets.pick(bucketName) : undefined;
     const rows = await this.assets.find({
       where: {
+        // An organization: only its own. Without a key: only files of no organization.
+        clientId: caller ? caller.id : IsNull(),
         ...(folder ? { folder } : {}),
         ...(scope ? { scope } : {}),
         ...(bucket ? { bucket: bucket === this.buckets.default ? In([bucket, ""]) : bucket } : {}),
@@ -353,10 +435,69 @@ export class AssetsService {
     return rows.map((a) => this.present(a));
   }
 
-  /** Removes the object then the record; a missing object is not an error. */
-  async remove(id: string) {
-    const asset = await this.assets.findOne({ where: { id } });
-    if (!asset) throw new NotFoundException(`Asset ${id} not found`);
+  /**
+   * Removes the object then the record; a missing object is not an error. An
+   * organization's file that something still uses (see setRefs) is refused.
+   */
+  async remove(id: string, caller: Caller = null) {
+    const asset = await this.owned(id, caller);
+    if (caller) {
+      const used = await this.refs.count({ where: { assetId: id } });
+      if (used) throw new ConflictException(`Asset ${id} is still used by ${used} record(s)`);
+    }
+    return this.delete(asset);
+  }
+
+  /**
+   * Says which files each of [caller]'s records uses ("loan:13" -> its file ids).
+   *
+   * mode "set": the record now uses exactly these (an empty list: nothing, e.g. it was
+   * deleted). A file that no record uses any more after this is deleted from storage.
+   * mode "add": these are added to what is known, nothing is taken away or deleted; for
+   * telling the service about records it hasn't heard of (safe to repeat).
+   *
+   * Ids that aren't the caller's files are left out, and listed in `missing`.
+   */
+  async setRefs(caller: Client, items: { ref: string; assetIds: string[] }[], mode: "set" | "add") {
+    const wanted = [...new Set(items.flatMap((i) => i.assetIds))];
+    const own = new Set(
+      wanted.length
+        ? (await this.assets.find({ where: { id: In(wanted), clientId: caller.id }, select: { id: true } })).map((a) => a.id)
+        : [],
+    );
+    const missing = wanted.filter((id) => !own.has(id));
+    const names = [...new Set(items.map((i) => i.ref))];
+
+    const dropped = await this.refs.manager.transaction(async (m) => {
+      const refs = m.getRepository(AssetRef);
+      let before: AssetRef[] = [];
+      if (mode === "set" && names.length) {
+        before = await refs.find({ where: { clientId: caller.id, ref: In(names) } });
+        await refs.delete({ clientId: caller.id, ref: In(names) });
+      }
+      const rows = items.flatMap((i) =>
+        [...new Set(i.assetIds)].filter((id) => own.has(id)).map((assetId) => ({ assetId, ref: i.ref, clientId: caller.id })),
+      );
+      if (rows.length) await refs.upsert(rows, ["assetId", "ref"]);
+      return [...new Set(before.map((r) => r.assetId))];
+    });
+
+    // Files that lost a record: deleted once nothing at all uses them.
+    const removed: string[] = [];
+    if (dropped.length) {
+      const still = new Set(
+        (await this.refs.find({ where: { assetId: In(dropped) }, select: { assetId: true } })).map((r) => r.assetId),
+      );
+      for (const asset of await this.assets.find({ where: { id: In(dropped.filter((id) => !still.has(id))), clientId: caller.id } })) {
+        await this.delete(asset);
+        removed.push(asset.id);
+      }
+    }
+    return { removed, missing };
+  }
+
+  private async delete(asset: Asset) {
+    const id = asset.id;
     try {
       await this.client.send(
         new DeleteObjectCommand({ Bucket: this.bucketOf(asset), Key: asset.objectKey }),
@@ -366,9 +507,54 @@ export class AssetsService {
         `S3 delete failed for ${asset.objectKey}: ${(err as Error).message}`,
       );
     }
+    await this.refs.delete({ assetId: id });
     await this.assets.delete(id);
     this.logger.log(`Deleted asset ${id}`);
     return { deleted: id };
+  }
+
+  /**
+   * Organizations' files stored before fingerprints (or claimed from before keys)
+   * get theirs, read back from the bucket one at a time, so a later upload of the
+   * same file is found. In the background: start-up doesn't wait for it.
+   */
+  onApplicationBootstrap() {
+    void this.fillFingerprints();
+  }
+
+  private filling = false;
+
+  private async fillFingerprints() {
+    if (this.filling) return;
+    this.filling = true;
+    let done = 0;
+    try {
+      for (;;) {
+        const batch = await this.assets
+          .createQueryBuilder("a")
+          .where("a.client_id IS NOT NULL AND a.sha256 IS NULL")
+          .orderBy("a.created_at", "ASC")
+          .take(50)
+          .getMany();
+        if (!batch.length) break;
+        for (const asset of batch) {
+          let sha256 = "-"; // can't be read: marked so it isn't tried again
+          try {
+            const res = await this.client.send(new GetObjectCommand({ Bucket: this.bucketOf(asset), Key: asset.objectKey }));
+            sha256 = await hashStream(res.Body as Readable);
+          } catch (err) {
+            this.logger.warn(`No fingerprint for ${asset.id}: ${(err as Error).message}`);
+          }
+          await this.assets.update(asset.id, { sha256 });
+          done++;
+        }
+      }
+      if (done) this.logger.log(`Fingerprinted ${done} stored file(s)`);
+    } catch (err) {
+      this.logger.error(`Fingerprinting stopped: ${(err as Error).message}`);
+    } finally {
+      this.filling = false;
+    }
   }
 
   /** The bucket an asset is in: its own, or the default for one stored before buckets. */

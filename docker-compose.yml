@@ -91,6 +91,11 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
 
+      # Organizations' keys: ADMIN_KEY allows POST /clients; REQUIRE_CLIENT_KEY=true
+      # refuses callers without a client key.
+      ADMIN_KEY: ${ADMIN_KEY:-}
+      REQUIRE_CLIENT_KEY: ${REQUIRE_CLIENT_KEY:-false}
+
       SWAGGER: ${SWAGGER:-false}
     ports:
       # Loopback only; nginx on the host terminates TLS and proxies here.

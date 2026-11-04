@@ -2,9 +2,12 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { Asset } from "../assets/asset.entity";
+import { AssetRef } from "../assets/asset-ref.entity";
+import { Client } from "../clients/client.entity";
 import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-CreateAssetsTable";
 import { AddAssetScope1757300000000 } from "../migrations/1757300000000-AddAssetScope";
 import { AddAssetBucket1761800000000 } from "../migrations/1761800000000-AddAssetBucket";
+import { AddClients1762000000000 } from "../migrations/1762000000000-AddClients";
 
 /**
  * Migrations are listed explicitly rather than by glob: the compiled build
@@ -16,6 +19,7 @@ const MIGRATIONS = [
   CreateAssetsTable1756704000000,
   AddAssetScope1757300000000,
   AddAssetBucket1761800000000,
+  AddClients1762000000000,
 ];
 
 @Module({
@@ -36,7 +40,7 @@ const MIGRATIONS = [
           username: config.get<string>("DB_USER"),
           password: config.get<string>("DB_PASSWORD"),
           database: config.get<string>("DB_NAME"),
-          entities: [Asset],
+          entities: [Asset, AssetRef, Client],
           migrations: MIGRATIONS,
           // Schema is built by migrations on start-up, so a new deployment
           // needs nothing but credentials. Opt out with MIGRATIONS_RUN=false
