@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
@@ -9,6 +10,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { In, IsNull, Repository } from "typeorm";
+import { Client as ClientRow, namedBuckets } from "../clients/client.entity";
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
@@ -25,7 +27,7 @@ import type { Readable } from "node:stream";
 import type { Client } from "../clients/client.entity";
 import { AssetRef } from "./asset-ref.entity";
 import { Asset } from "./asset.entity";
-import { Buckets } from "./buckets";
+import { Buckets, STORE_BUCKET } from "./buckets";
 import { StoreBuckets } from "./store-buckets";
 
 const MB = 1024 * 1024;
@@ -114,6 +116,7 @@ export class AssetsService implements OnApplicationBootstrap {
   constructor(
     @InjectRepository(Asset) private readonly assets: Repository<Asset>,
     @InjectRepository(AssetRef) private readonly refs: Repository<AssetRef>,
+    @InjectRepository(ClientRow) private readonly clientRows: Repository<ClientRow>,
     config: ConfigService,
   ) {
     const region = config.get<string>("AWS_REGION");
@@ -145,35 +148,103 @@ export class AssetsService implements OnApplicationBootstrap {
     return this.buckets.default;
   }
 
-  /** Files in [bucket] that belong to nobody become [clientId]'s. Returns how many. */
-  async claimUnowned(bucket: string, clientId: string) {
-    const result = await this.assets.update({ bucket, clientId: IsNull() }, { clientId });
-    void this.fillFingerprints();
-    return result.affected ?? 0;
+  /** Whether [client] owns [bucket]: one it names, or (store buckets on) any store's own. */
+  owns(client: Client, bucket: string) {
+    return namedBuckets(client).includes(bucket) || (client.storeBuckets && STORE_BUCKET.test(bucket));
   }
 
   /**
-   * Whether [caller] may see [asset]: an organization only its own files, a caller
-   * without a key only files that belong to no organization.
+   * Files that belong to nobody and are in [client]'s buckets become its own: its old
+   * files, stored before it had a key, keep working with it. Only [ids] when given,
+   * else all of them. Returns how many.
+   */
+  async claimUnowned(client: Client, ids?: string[]) {
+    if (ids && !ids.length) return 0;
+    const q = this.assets
+      .createQueryBuilder()
+      .update()
+      .set({ clientId: client.id })
+      .where("client_id IS NULL")
+      .andWhere(
+        client.storeBuckets
+          ? "(bucket IN (:...named) OR bucket REGEXP :store)"
+          : "bucket IN (:...named)",
+        { named: namedBuckets(client), store: STORE_BUCKET.source },
+      );
+    if (ids) q.andWhere("id IN (:...ids)", { ids });
+    const claimed = (await q.execute()).affected ?? 0;
+    if (claimed) {
+      this.logger.log(`${claimed} old file(s) now belong to ${client.name}`);
+      void this.fillFingerprints();
+    }
+    return claimed;
+  }
+
+  /**
+   * Whether [caller] may see [asset]: an organization its own files (and old ones of no
+   * one in its buckets, which become its own on use); a caller without a key only files
+   * that belong to no organization.
    */
   private mine(asset: Asset, caller: Caller) {
-    return caller ? asset.clientId === caller.id : !asset.clientId;
+    if (!caller) return !asset.clientId;
+    return asset.clientId === caller.id || (!asset.clientId && this.owns(caller, this.bucketOf(asset)));
   }
 
   /** The asset with this id, if [caller] may see it; otherwise not found (it isn't said that it exists). */
   private async owned(id: string, caller: Caller) {
     const asset = await this.assets.findOne({ where: { id } });
     if (!asset || !this.mine(asset, caller)) throw new NotFoundException(`Asset ${id} not found`);
+    if (caller && !asset.clientId) {
+      await this.claimUnowned(caller, [asset.id]);
+      asset.clientId = caller.id;
+    }
     return asset;
   }
 
+  /** Active organizations, briefly remembered (asked on every keyless write). */
+  private owners: { list: Client[]; until: number } | null = null;
+
+  /** Call after a client changes. */
+  forgetOwners() {
+    this.owners = null;
+  }
+
+  /** The active organization that owns [bucket], if any. */
+  async ownerOf(bucket: string): Promise<Client | null> {
+    if (!this.owners || this.owners.until < Date.now()) {
+      this.owners = { list: await this.clientRows.find({ where: { active: true } }), until: Date.now() + 30_000 };
+    }
+    return this.owners.list.find((c) => this.owns(c, bucket)) ?? null;
+  }
+
   /**
-   * The bucket a file goes to: an organization's own; else the one the caller
-   * names (if allowed), else the store's own when the scope is a store's, else
-   * the default.
+   * Refuses writing into a bucket that belongs to an organization (app) for anyone
+   * without that app's key: once the loan app has a key, nothing else can put files in
+   * its bucket. Buckets of no organization (my-store's) stay open as before.
+   */
+  private async assertMayWrite(bucket: string, caller: Caller) {
+    const owner = await this.ownerOf(bucket);
+    if (owner && owner.id !== caller?.id) {
+      throw new ForbiddenException(`Bucket "${bucket}" belongs to ${owner.name}: send its client key and secret`);
+    }
+  }
+
+  /**
+   * The bucket a file goes to. An organization: the one it names if it is its own,
+   * else (store buckets on) the store's own for a store's scope, else its main one.
+   * Without a key: the one named (if allowed), else the store's own when the scope is a
+   * store's, else the default.
    */
   private async bucketFor(bucketName: string | undefined, scope: string, caller: Caller = null) {
-    if (caller) return caller.bucket;
+    if (caller) {
+      const named = bucketName?.trim();
+      if (named) {
+        if (!this.owns(caller, named)) throw new ForbiddenException(`Bucket "${named}" is not ${caller.name}'s`);
+        return named;
+      }
+      if (caller.storeBuckets) return (await this.storeBuckets.forScope(scope)) ?? caller.bucket;
+      return caller.bucket;
+    }
     if (bucketName?.trim()) return this.buckets.pick(bucketName);
     return (await this.storeBuckets.forScope(scope)) ?? this.buckets.default;
   }
@@ -191,6 +262,7 @@ export class AssetsService implements OnApplicationBootstrap {
     // The controller writes it to a temporary file (a 200 MB video is not held in memory); gone once handled.
     try {
       const bucket = await this.bucketFor(bucketName, scope, caller);
+      await this.assertMayWrite(bucket, caller);
       const media = MEDIA[file.mimetype];
       if (!media) {
         throw new BadRequestException(
@@ -203,7 +275,7 @@ export class AssetsService implements OnApplicationBootstrap {
       const safeFolder = ALLOWED_FOLDERS.includes(folder) ? folder : DEFAULT_FOLDER[media.kind];
 
       let sha256: string | null = null;
-      if (caller) {
+      if (caller?.sameFileCheck) {
         sha256 = file.path
           ? await hashStream(createReadStream(file.path))
           : createHash("sha256").update(file.buffer).digest("hex");
@@ -259,7 +331,8 @@ export class AssetsService implements OnApplicationBootstrap {
    * must send the same Content-Type it was signed for.
    */
   async signUpload(contentType: string, size: number, fileName: string, bucketName?: string, caller: Caller = null) {
-    const bucket = caller ? caller.bucket : this.buckets.pick(bucketName);
+    const bucket = caller ? await this.bucketFor(bucketName, "", caller) : this.buckets.pick(bucketName);
+    await this.assertMayWrite(bucket, caller);
     const kind = DIRECT_TYPES[contentType];
     if (!kind) throw new BadRequestException("Only an Android app (.apk), a video or audio can be uploaded this way");
     if (!Number.isInteger(size) || size <= 0) throw new BadRequestException("The file is empty");
@@ -280,12 +353,13 @@ export class AssetsService implements OnApplicationBootstrap {
    * caller. One over its ceiling is deleted rather than kept.
    */
   async completeUpload(objectKey: string, scope = "", bucketName?: string, caller: Caller = null) {
-    const bucket = caller ? caller.bucket : this.buckets.pick(bucketName);
+    const bucket = caller ? await this.bucketFor(bucketName, "", caller) : this.buckets.pick(bucketName);
+    await this.assertMayWrite(bucket, caller);
     if (!DIRECT_KEY.test(objectKey)) throw new BadRequestException("Not a file uploaded on a signed link");
     const existing = await this.assets.findOne({ where: { objectKey } });
     if (existing) {
       if (!this.mine(existing, caller)) throw new NotFoundException("The upload did not arrive — try again");
-      return this.present(existing);
+      return this.present(await this.owned(existing.id, caller));
     }
     let head;
     try {
@@ -337,13 +411,15 @@ export class AssetsService implements OnApplicationBootstrap {
     }
     // The copy goes to an organization's own bucket; else the bucket asked for, else its store's own, else next to its source.
     const bucket = caller
-      ? caller.bucket
+      ? await this.bucketFor(bucketName, scope, caller)
       : bucketName ? this.buckets.pick(bucketName) : ((await this.storeBuckets.forScope(scope)) ?? from);
+    await this.assertMayWrite(bucket, caller);
 
     const objectKey = decodeURIComponent(parsed.pathname.replace(/^\/+/, ""));
     const source = await this.assets.findOne({ where: { objectKey } });
     // Another organization's file can't be copied (nor, by an organization, a file with no row here).
     if (source ? !this.mine(source, caller) : caller) throw new NotFoundException("Source asset not found");
+    if (source && caller && !source.clientId) await this.owned(source.id, caller);
 
     // Saving an existing theme should not manufacture a new file each time.
     if (source?.scope === scope && source.folder === folder && this.bucketOf(source) === bucket && !caller) {
@@ -460,6 +536,8 @@ export class AssetsService implements OnApplicationBootstrap {
    */
   async setRefs(caller: Client, items: { ref: string; assetIds: string[] }[], mode: "set" | "add") {
     const wanted = [...new Set(items.flatMap((i) => i.assetIds))];
+    // Its old files (stored before it had a key) become its own as it says it uses them.
+    await this.claimUnowned(caller, wanted);
     const own = new Set(
       wanted.length
         ? (await this.assets.find({ where: { id: In(wanted), clientId: caller.id }, select: { id: true } })).map((a) => a.id)
@@ -529,10 +607,12 @@ export class AssetsService implements OnApplicationBootstrap {
     this.filling = true;
     let done = 0;
     try {
-      for (;;) {
+      // Only apps with the same-file check (no join: the tables may differ in collation).
+      const ids = (await this.clientRows.find({ where: { sameFileCheck: true }, select: { id: true } })).map((c) => c.id);
+      for (; ids.length; ) {
         const batch = await this.assets
           .createQueryBuilder("a")
-          .where("a.client_id IS NOT NULL AND a.sha256 IS NULL")
+          .where("a.sha256 IS NULL AND a.client_id IN (:...ids)", { ids })
           .orderBy("a.created_at", "ASC")
           .take(50)
           .getMany();

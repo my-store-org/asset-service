@@ -38,6 +38,7 @@ export class CallerMiddleware implements NestMiddleware {
       if (key || secret) {
         if (!key || !secret) throw new UnauthorizedException("Send both x-client-key and x-client-secret");
         req.caller = await this.clients.authenticate(key, secret);
+        if (!req.caller && this.required) throw new UnauthorizedException("This client key is turned off");
       } else if (this.required) {
         throw new UnauthorizedException("A client key and secret are required");
       } else {

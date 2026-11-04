@@ -21,7 +21,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from "@nestjs/swagger";
-import { IsBoolean, IsOptional, IsString, Length } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, Length } from "class-validator";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
 import { ClientsService } from "./clients.service";
@@ -48,24 +48,86 @@ export class CreateClientDto {
   @Length(1, 120)
   name: string;
 
-  @ApiProperty({ description: "Its own bucket (S3_BUCKET or one in S3_BUCKETS).", example: "sambath-loan-bucket" })
+  @ApiProperty({ description: "Where its files go (S3_BUCKET or one in S3_BUCKETS).", example: "sambath-loan-bucket" })
   @IsString()
   @Length(3, 63)
   bucket: string;
 
+  @ApiPropertyOptional({ type: [String], description: "Other buckets that are its own.", example: [] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  buckets?: string[];
+
   @ApiPropertyOptional({
-    description: "Files already in that bucket that belong to nobody become this client's.",
+    description: "My Store: it also owns every store's own bucket (<store>-my-store-assets-<id>).",
     default: false,
   })
   @IsOptional()
   @IsBoolean()
+  storeBuckets?: boolean;
+
+  @ApiPropertyOptional({
+    description: "The same file uploaded again is stored once. Turn off for an app that doesn't send PUT /refs (My Store).",
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  sameFileCheck?: boolean;
+
+  @ApiPropertyOptional({
+    description: "Its old files (in its buckets, belonging to no one) become its own. On unless false.",
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
   claimExisting?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      "false: made turned off. Its key then works like no key and it owns nothing, so the app " +
+      "can be deployed with it first; turn it on (PATCH active: true) to claim its files.",
+    default: true,
+  })
+  @IsOptional()
+  @IsBoolean()
+  active?: boolean;
 }
 
 export class UpdateClientDto {
-  @ApiProperty({ description: "false turns its key off." })
+  @ApiPropertyOptional({ description: "false turns its key off." })
+  @IsOptional()
   @IsBoolean()
-  active: boolean;
+  active?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Length(3, 63)
+  bucket?: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  buckets?: string[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  storeBuckets?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  sameFileCheck?: boolean;
+
+  @ApiPropertyOptional({ default: true })
+  @IsOptional()
+  @IsBoolean()
+  claimExisting?: boolean;
 }
 
 @ApiTags("clients")
@@ -83,7 +145,7 @@ export class ClientsController {
       "The app then sends x-client-key and x-client-secret, and sees only its own files.",
   })
   create(@Body() dto: CreateClientDto) {
-    return this.clients.create(dto.name, dto.bucket, dto.claimExisting);
+    return this.clients.create(dto);
   }
 
   @Get()
@@ -99,8 +161,17 @@ export class ClientsController {
   }
 
   @Patch(":id")
-  @ApiOperation({ summary: "Turn a key on or off" })
+  @ApiOperation({ summary: "Turn a key on or off, or change its buckets" })
   update(@Param("id", ParseUUIDPipe) id: string, @Body() dto: UpdateClientDto) {
-    return this.clients.setActive(id, dto.active);
+    return this.clients.update(id, dto);
+  }
+
+  @Post(":id/claim")
+  @ApiOperation({
+    summary: "Claim old files again",
+    description: "Files in its buckets that belong to no one become its own.",
+  })
+  claim(@Param("id", ParseUUIDPipe) id: string) {
+    return this.clients.claim(id);
   }
 }

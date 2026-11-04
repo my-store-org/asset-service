@@ -8,6 +8,8 @@ import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-Crea
 import { AddAssetScope1757300000000 } from "../migrations/1757300000000-AddAssetScope";
 import { AddAssetBucket1761800000000 } from "../migrations/1761800000000-AddAssetBucket";
 import { AddClients1762000000000 } from "../migrations/1762000000000-AddClients";
+import { AddClientBuckets1762000000100 } from "../migrations/1762000000100-AddClientBuckets";
+import { AddClientSameFileCheck1762000000200 } from "../migrations/1762000000200-AddClientSameFileCheck";
 
 /**
  * Migrations are listed explicitly rather than by glob: the compiled build
@@ -20,6 +22,8 @@ const MIGRATIONS = [
   AddAssetScope1757300000000,
   AddAssetBucket1761800000000,
   AddClients1762000000000,
+  AddClientBuckets1762000000100,
+  AddClientSameFileCheck1762000000200,
 ];
 
 @Module({
