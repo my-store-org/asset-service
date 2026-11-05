@@ -1,5 +1,6 @@
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import type { NestExpressApplication } from "@nestjs/platform-express";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import { getDataSourceToken } from "@nestjs/typeorm";
 import type { DataSource } from "typeorm";
@@ -72,7 +73,9 @@ async function bootstrap() {
   // the tables inside. A fresh deployment needs only DB_* in the env.
   await ensureDatabase();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Room for an app moving its whole drive in at once (POST /drive/import); the default is 100 KB.
+  app.useBodyParser("json", { limit: "20mb" });
 
   // After the migrations the module ran, so the column exists to write to.
   await claimUnownedAssets(app.get(getDataSourceToken()));
@@ -94,6 +97,7 @@ async function bootstrap() {
       .setVersion("1.0")
       .addTag("assets", "Upload, read and delete stored files")
       .addTag("refs", "What an organization's records use, so unused files are deleted")
+      .addTag("drive", "Each organization's folders and files (needs its client key)")
       .addTag("clients", "Organizations' keys and secrets (needs x-admin-key)")
       .addApiKey({ type: "apiKey", in: "header", name: "x-client-key" }, "client-key")
       .addApiKey({ type: "apiKey", in: "header", name: "x-client-secret" }, "client-secret")

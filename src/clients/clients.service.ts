@@ -73,6 +73,8 @@ export class ClientsService {
   /** Old files in its buckets that belong to no one become its own (again, e.g. after a gap). */
   async claim(id: string) {
     const client = await this.find(id);
+    // A key that is off owns nothing (that is what lets an app get it before it counts).
+    if (!client.active) throw new ConflictException(`${client.name} is turned off: turn it on first (that claims its files)`);
     return { claimed: await this.assets.claimUnowned(client) };
   }
 

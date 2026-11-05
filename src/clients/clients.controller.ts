@@ -24,6 +24,7 @@ import {
 import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, Length } from "class-validator";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
+import { AssetsService } from "../assets/assets.service";
 import { ClientsService } from "./clients.service";
 
 /** Only whoever runs this service: `x-admin-key` must equal ADMIN_KEY. */
@@ -135,7 +136,10 @@ export class UpdateClientDto {
 @UseGuards(AdminGuard)
 @Controller("clients")
 export class ClientsController {
-  constructor(private readonly clients: ClientsService) {}
+  constructor(
+    private readonly clients: ClientsService,
+    private readonly assets: AssetsService,
+  ) {}
 
   @Post()
   @ApiOperation({
@@ -152,6 +156,15 @@ export class ClientsController {
   @ApiOperation({ summary: "List organizations (without secrets)" })
   list() {
     return this.clients.list();
+  }
+
+  @Get("buckets")
+  @ApiOperation({
+    summary: "List buckets",
+    description: "Every bucket this service knows, with its owner (if any) and how many files it holds.",
+  })
+  buckets() {
+    return this.assets.bucketSummary();
   }
 
   @Post(":id/secret")

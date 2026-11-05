@@ -144,6 +144,55 @@ export class AssetsService implements OnApplicationBootstrap {
     return this.buckets.pick(name);
   }
 
+  /**
+   * Every bucket this service knows: the ones it is set up to write to (S3_BUCKET,
+   * S3_BUCKETS), the ones organizations own, and any it holds files in (a store's own,
+   * made later). Each with its owner and how many files it holds.
+   */
+  async bucketSummary() {
+    const config = this.buckets.list();
+    const rows = (await this.assets.query(
+      `SELECT bucket, COUNT(*) AS files, COALESCE(SUM(size), 0) AS bytes,
+              SUM(client_id IS NULL) AS unowned, MAX(created_at) AS lastUpload
+         FROM assets GROUP BY bucket`,
+    )) as { bucket: string; files: string; bytes: string; unowned: string; lastUpload: Date | null }[];
+    // Rows from before buckets were recorded are in the default one.
+    const stats = new Map<string, { files: number; bytes: number; unowned: number; lastUpload: Date | null }>();
+    for (const r of rows) {
+      const name = r.bucket || config.default;
+      const s = stats.get(name) ?? { files: 0, bytes: 0, unowned: 0, lastUpload: null };
+      s.files += Number(r.files);
+      s.bytes += Number(r.bytes);
+      s.unowned += Number(r.unowned);
+      if (r.lastUpload && (!s.lastUpload || r.lastUpload > s.lastUpload)) s.lastUpload = r.lastUpload;
+      stats.set(name, s);
+    }
+    const clients = await this.clientRows.find();
+    const names = new Set([config.default, ...config.others, ...stats.keys(), ...clients.flatMap((c) => namedBuckets(c))]);
+    const kindOf = (b: string): "default" | "listed" | "store" | "other" =>
+      b === config.default ? "default" : config.others.includes(b) ? "listed" : STORE_BUCKET.test(b) ? "store" : "other";
+    const order = { default: 0, listed: 1, store: 2, other: 3 } as const;
+    return {
+      anyBucket: config.any,
+      buckets: [...names]
+        .map((bucket) => {
+          const owners = clients.filter((c) => this.owns(c, bucket));
+          const owner = owners.find((c) => c.active) ?? null;
+          const s = stats.get(bucket) ?? { files: 0, bytes: 0, unowned: 0, lastUpload: null };
+          return {
+            bucket,
+            kind: kindOf(bucket),
+            host: this.buckets.host(bucket),
+            owner: owner && { id: owner.id, name: owner.name },
+            // Keys made for it but still turned off (they own nothing yet).
+            waiting: owners.filter((c) => !c.active).map((c) => ({ id: c.id, name: c.name })),
+            ...s,
+          };
+        })
+        .sort((a, b) => order[a.kind] - order[b.kind] || b.files - a.files || a.bucket.localeCompare(b.bucket)),
+    };
+  }
+
   get defaultBucket() {
     return this.buckets.default;
   }
