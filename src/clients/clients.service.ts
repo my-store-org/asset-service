@@ -5,11 +5,13 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Repository } from "typeorm";
 import { AssetsService } from "../assets/assets.service";
 import { Client } from "./client.entity";
+import { SecretBox } from "./secret-box";
 
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -17,15 +19,20 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 @Injectable()
 export class ClientsService {
   private readonly logger = new Logger(ClientsService.name);
+  /** Keeps each secret encrypted, so the console can show it again. */
+  private readonly box: SecretBox;
 
   constructor(
     @InjectRepository(Client) private readonly clients: Repository<Client>,
     private readonly assets: AssetsService,
-  ) {}
+    config: ConfigService,
+  ) {
+    this.box = new SecretBox(config.get<string>("SECRETS_KEY"), config.get<string>("ADMIN_KEY"));
+  }
 
   /**
-   * Makes an organization with a new key and secret. The secret is only in this
-   * answer; keep it, it can't be shown again (make a new one with rotateSecret).
+   * Makes an organization with a new key and secret. The secret is kept encrypted, so
+   * the console can show it again (revealSecret); it is checked by its hash.
    *
    * [bucket] is where its files go; [buckets] other buckets that are its own;
    * [storeBuckets] (My Store) every store's own bucket too. A bucket can belong to only
@@ -44,6 +51,7 @@ export class ClientsService {
     });
     const secret = this.newSecret();
     client.secretHash = sha256(secret);
+    client.secretEnc = this.box.seal(secret);
     await this.clients.save(client);
     this.assets.forgetOwners();
     // Made turned off (to set its key in the app first): it owns nothing until turned on.
@@ -68,6 +76,15 @@ export class ClientsService {
     this.assets.forgetOwners();
     const claimed = client.active && opts.claimExisting !== false ? await this.assets.claimUnowned(client) : 0;
     return { ...this.present(client), claimed };
+  }
+
+  /** Makes a bucket; with [ownerId], adds it to that organization's buckets. */
+  async createBucket(name: string, ownerId?: string) {
+    const owner = ownerId ? await this.find(ownerId) : null;
+    const made = await this.assets.createBucket(name);
+    if (!owner) return { ...made, owner: null };
+    const updated = await this.update(owner.id, { buckets: [...owner.buckets, made.bucket], claimExisting: false });
+    return { ...made, owner: { id: updated.id, name: updated.name } };
   }
 
   /** Old files in its buckets that belong to no one become its own (again, e.g. after a gap). */
@@ -99,11 +116,25 @@ export class ClientsService {
     return rows.map((c) => this.present(c));
   }
 
+  /** Its secret, for the console to show or copy; only when it was kept (made after this existed). */
+  async revealSecret(id: string) {
+    const client = await this.find(id);
+    if (!client.secretEnc) {
+      throw new NotFoundException(`${client.name}'s secret was made before secrets were kept: make a new secret to see it`);
+    }
+    const secret = this.box.open(client.secretEnc);
+    if (!secret) {
+      throw new ConflictException(`${client.name}'s secret can't be read with the current SECRETS_KEY / ADMIN_KEY: make a new secret to see it`);
+    }
+    return { id: client.id, clientSecret: secret };
+  }
+
   /** A new secret; the old one stops working at once. */
   async rotateSecret(id: string) {
     const client = await this.find(id);
     const secret = this.newSecret();
     client.secretHash = sha256(secret);
+    client.secretEnc = this.box.seal(secret);
     await this.clients.save(client);
     return { ...this.present(client), clientSecret: secret };
   }
@@ -141,6 +172,8 @@ export class ClientsService {
       storeBuckets: c.storeBuckets,
       sameFileCheck: c.sameFileCheck,
       active: c.active,
+      /** Whether the console can show its secret again (made after secrets were kept). */
+      secretStored: !!c.secretEnc && this.box.enabled,
       createdAt: c.createdAt,
     };
   }

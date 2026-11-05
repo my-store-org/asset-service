@@ -8,12 +8,13 @@ import { DriveController } from "../drive/drive.controller";
 import { DriveFile, DriveFolder } from "../drive/drive.entity";
 import { DriveService } from "../drive/drive.service";
 import { AssetRef } from "./asset-ref.entity";
+import { ManagedBucket } from "./managed-bucket.entity";
 import { Asset } from "./asset.entity";
 import { AssetsController, RefsController } from "./assets.controller";
 import { AssetsService } from "./assets.service";
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Asset, AssetRef, Client, DriveFolder, DriveFile])],
+  imports: [TypeOrmModule.forFeature([Asset, AssetRef, Client, DriveFolder, DriveFile, ManagedBucket])],
   controllers: [AssetsController, RefsController, ClientsController, DriveController],
   providers: [AssetsService, ClientsService, AdminGuard, DriveService],
 })

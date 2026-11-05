@@ -6,6 +6,7 @@ import {
   Logger,
   NotFoundException,
   OnApplicationBootstrap,
+  OnModuleInit,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -13,7 +14,12 @@ import { In, IsNull, Repository } from "typeorm";
 import { Client as ClientRow, namedBuckets } from "../clients/client.entity";
 import {
   CopyObjectCommand,
+  CreateBucketCommand,
+  type BucketLocationConstraint,
   DeleteObjectCommand,
+  PutBucketCorsCommand,
+  PutBucketPolicyCommand,
+  PutPublicAccessBlockCommand,
   GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
@@ -26,6 +32,7 @@ import { unlink } from "node:fs/promises";
 import type { Readable } from "node:stream";
 import type { Client } from "../clients/client.entity";
 import { AssetRef } from "./asset-ref.entity";
+import { ManagedBucket } from "./managed-bucket.entity";
 import { Asset } from "./asset.entity";
 import { Buckets, STORE_BUCKET } from "./buckets";
 import { StoreBuckets } from "./store-buckets";
@@ -94,6 +101,9 @@ const ALLOWED_FOLDERS = [
 ];
 
 
+/** S3's rule for a bucket name: 3–63 of a-z, 0-9, dot and dash. */
+const BUCKET_NAME_RULE = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
+
 /** The organization calling (by its key), or null for a caller without one. */
 type Caller = Client | null;
 
@@ -105,9 +115,10 @@ async function hashStream(stream: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 @Injectable()
-export class AssetsService implements OnApplicationBootstrap {
+export class AssetsService implements OnApplicationBootstrap, OnModuleInit {
   private readonly logger = new Logger(AssetsService.name);
   private readonly client: S3Client;
+  private readonly region: string;
   /** The buckets callers may name, and each one's public host. */
   private readonly buckets: Buckets;
   /** Each store's own bucket, for a file uploaded with that store's scope. */
@@ -117,12 +128,14 @@ export class AssetsService implements OnApplicationBootstrap {
     @InjectRepository(Asset) private readonly assets: Repository<Asset>,
     @InjectRepository(AssetRef) private readonly refs: Repository<AssetRef>,
     @InjectRepository(ClientRow) private readonly clientRows: Repository<ClientRow>,
+    @InjectRepository(ManagedBucket) private readonly managed: Repository<ManagedBucket>,
     config: ConfigService,
   ) {
     const region = config.get<string>("AWS_REGION");
     const accessKeyId = config.get<string>("AWS_ACCESS_KEY_ID");
     const secretAccessKey = config.get<string>("AWS_SECRET_ACCESS_KEY");
     if (!region) throw new Error("AWS_REGION is not set");
+    this.region = region;
 
     this.buckets = new Buckets({
       bucket: config.get<string>("S3_BUCKET"),
@@ -137,6 +150,85 @@ export class AssetsService implements OnApplicationBootstrap {
       accessKeyId && secretAccessKey
         ? new S3Client({ region, credentials: { accessKeyId, secretAccessKey } })
         : new S3Client({ region });
+  }
+
+  /** Buckets made through the service are allowed from start-up, before any request. */
+  async onModuleInit() {
+    for (const b of await this.managed.find()) this.buckets.add(b.name, b.publicHost);
+  }
+
+  /**
+   * Makes a bucket in this service's region and allows it at once (no S3_BUCKETS edit,
+   * no restart). Set up like every other one: anyone can read a file by its url, nobody
+   * can list or write without keys, and a browser may upload on a signed link.
+   */
+  async createBucket(name: string) {
+    const bucket = name.trim().toLowerCase();
+    if (!BUCKET_NAME_RULE.test(bucket) || bucket.includes("..") || /^\d+\.\d+\.\d+\.\d+$/.test(bucket)) {
+      throw new BadRequestException("A bucket name is 3–63 of a-z, 0-9, dot and dash, starting and ending with a letter or digit");
+    }
+    if (this.buckets.knows(bucket)) throw new ConflictException(`"${bucket}" is already one of this service's buckets`);
+    const region = this.region;
+    try {
+      await this.client.send(
+        new CreateBucketCommand({
+          Bucket: bucket,
+          ...(region !== "us-east-1" && { CreateBucketConfiguration: { LocationConstraint: region as BucketLocationConstraint } }),
+        }),
+      );
+    } catch (err) {
+      const code = (err as { name?: string }).name;
+      // Made before (a retry, or by hand) in this same AWS account: take it as it is.
+      if (code !== "BucketAlreadyOwnedByYou") throw this.s3Problem(code, bucket, err as Error);
+    }
+    try {
+      await this.client.send(
+        new PutPublicAccessBlockCommand({
+          Bucket: bucket,
+          // ACLs stay blocked; only the read policy below makes files public.
+          PublicAccessBlockConfiguration: { BlockPublicAcls: true, IgnorePublicAcls: true, BlockPublicPolicy: false, RestrictPublicBuckets: false },
+        }),
+      );
+      await this.client.send(
+        new PutBucketPolicyCommand({
+          Bucket: bucket,
+          Policy: JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [{ Sid: "PublicRead", Effect: "Allow", Principal: "*", Action: "s3:GetObject", Resource: `arn:aws:s3:::${bucket}/*` }],
+          }),
+        }),
+      );
+      await this.client.send(
+        new PutBucketCorsCommand({
+          Bucket: bucket,
+          CORSConfiguration: { CORSRules: [{ AllowedMethods: ["GET", "HEAD", "PUT"], AllowedOrigins: ["*"], AllowedHeaders: ["*"], MaxAgeSeconds: 3600 }] },
+        }),
+      );
+    } catch (err) {
+      throw this.s3Problem((err as { name?: string }).name, bucket, err as Error, true);
+    }
+    await this.managed.save(this.managed.create({ name: bucket }));
+    this.buckets.add(bucket);
+    this.logger.log(`Bucket ${bucket} made in ${region}`);
+    return { bucket, host: this.buckets.host(bucket), region };
+  }
+
+  /** An S3 refusal, as something a person can act on. */
+  private s3Problem(code: string | undefined, bucket: string, err: Error, settingUp = false) {
+    if (code === "BucketAlreadyExists") {
+      return new ConflictException(`"${bucket}" is taken: bucket names are shared by every AWS account in the world. Try another.`);
+    }
+    if (code === "InvalidBucketName") return new BadRequestException(`"${bucket}" is not a name S3 accepts`);
+    if (code === "AccessDenied" || code === "AllAccessDisabled") {
+      return new ForbiddenException(
+        settingUp
+          ? `The bucket was made, but the service's AWS keys may not set it up (s3:PutBucketPublicAccessBlock, s3:PutBucketPolicy, s3:PutBucketCORS). Allow those and make it again.`
+          : `The service's AWS keys may not make buckets (s3:CreateBucket). Allow it in IAM, or make the bucket in the AWS console.`,
+      );
+    }
+    if (code === "TooManyBuckets") return new BadRequestException("This AWS account has reached its bucket limit");
+    this.logger.error(`S3 refused ${bucket}: ${code ?? ""} ${err.message}`);
+    return new BadRequestException(`S3 refused: ${err.message}`);
   }
 
   /** A bucket this service may write to (refused otherwise). */
@@ -168,10 +260,18 @@ export class AssetsService implements OnApplicationBootstrap {
       stats.set(name, s);
     }
     const clients = await this.clientRows.find();
-    const names = new Set([config.default, ...config.others, ...stats.keys(), ...clients.flatMap((c) => namedBuckets(c))]);
-    const kindOf = (b: string): "default" | "listed" | "store" | "other" =>
-      b === config.default ? "default" : config.others.includes(b) ? "listed" : STORE_BUCKET.test(b) ? "store" : "other";
-    const order = { default: 0, listed: 1, store: 2, other: 3 } as const;
+    const names = new Set([config.default, ...config.others, ...config.made, ...stats.keys(), ...clients.flatMap((c) => namedBuckets(c))]);
+    const kindOf = (b: string): "default" | "listed" | "made" | "store" | "other" =>
+      b === config.default
+        ? "default"
+        : config.others.includes(b)
+          ? "listed"
+          : config.made.includes(b)
+            ? "made"
+            : STORE_BUCKET.test(b)
+              ? "store"
+              : "other";
+    const order = { default: 0, listed: 1, made: 2, store: 3, other: 4 } as const;
     return {
       anyBucket: config.any,
       buckets: [...names]

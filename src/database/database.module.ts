@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from "@nestjs/config";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { Asset } from "../assets/asset.entity";
 import { AssetRef } from "../assets/asset-ref.entity";
+import { ManagedBucket } from "../assets/managed-bucket.entity";
 import { Client } from "../clients/client.entity";
 import { DriveFile, DriveFolder } from "../drive/drive.entity";
 import { CreateAssetsTable1756704000000 } from "../migrations/1756704000000-CreateAssetsTable";
@@ -12,6 +13,8 @@ import { AddClients1762000000000 } from "../migrations/1762000000000-AddClients"
 import { AddClientBuckets1762000000100 } from "../migrations/1762000000100-AddClientBuckets";
 import { AddClientSameFileCheck1762000000200 } from "../migrations/1762000000200-AddClientSameFileCheck";
 import { AddDrive1762000000300 } from "../migrations/1762000000300-AddDrive";
+import { AddManagedBuckets1762000000400 } from "../migrations/1762000000400-AddManagedBuckets";
+import { AddClientSecretEnc1762000000500 } from "../migrations/1762000000500-AddClientSecretEnc";
 
 /**
  * Migrations are listed explicitly rather than by glob: the compiled build
@@ -27,6 +30,8 @@ const MIGRATIONS = [
   AddClientBuckets1762000000100,
   AddClientSameFileCheck1762000000200,
   AddDrive1762000000300,
+  AddManagedBuckets1762000000400,
+  AddClientSecretEnc1762000000500,
 ];
 
 @Module({
@@ -47,7 +52,7 @@ const MIGRATIONS = [
           username: config.get<string>("DB_USER"),
           password: config.get<string>("DB_PASSWORD"),
           database: config.get<string>("DB_NAME"),
-          entities: [Asset, AssetRef, Client, DriveFolder, DriveFile],
+          entities: [Asset, AssetRef, Client, DriveFolder, DriveFile, ManagedBucket],
           migrations: MIGRATIONS,
           // Schema is built by migrations on start-up, so a new deployment
           // needs nothing but credentials. Opt out with MIGRATIONS_RUN=false

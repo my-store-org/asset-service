@@ -29,6 +29,8 @@ export const STORE_BUCKET = /^(?:[a-z0-9-]+-)?my-store-assets-\d+$/;
 export class Buckets {
   readonly default: string;
   private readonly hosts = new Map<string, string>();
+  /** Buckets made through the service (managed_buckets), allowed like those in S3_BUCKETS. */
+  private readonly made = new Set<string>();
   private readonly any: boolean;
   private readonly region: string;
 
@@ -72,8 +74,25 @@ export class Buckets {
     return null;
   }
 
-  /** The buckets named in configuration, for the start-up log. */
+  /** Allows a bucket made through the service (from then on, like one in S3_BUCKETS). */
+  add(name: string, host = "") {
+    if (!this.hosts.has(name)) this.hosts.set(name, host);
+    else if (host) this.hosts.set(name, host);
+    if (name !== this.default) this.made.add(name);
+  }
+
+  /** Whether this name is already one of the service's buckets (set up, or made here). */
+  knows(name: string) {
+    return this.hosts.has(name);
+  }
+
+  /** The buckets named in configuration, and those made through the service. */
   list() {
-    return { default: this.default, others: [...this.hosts.keys()].filter((b) => b !== this.default), any: this.any };
+    return {
+      default: this.default,
+      others: [...this.hosts.keys()].filter((b) => b !== this.default && !this.made.has(b)),
+      made: [...this.made],
+      any: this.any,
+    };
   }
 }

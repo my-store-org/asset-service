@@ -21,7 +21,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from "@nestjs/swagger";
-import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, Length } from "class-validator";
+import { ArrayMaxSize, IsArray, IsBoolean, IsOptional, IsString, IsUUID, Length } from "class-validator";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";
 import { AssetsService } from "../assets/assets.service";
@@ -96,6 +96,18 @@ export class CreateClientDto {
   active?: boolean;
 }
 
+export class CreateBucketDto {
+  @ApiProperty({ description: "3–63 of a-z, 0-9, dot and dash; unique across all of AWS.", example: "sambath-loan-uat-bucket" })
+  @IsString()
+  @Length(3, 63)
+  name: string;
+
+  @ApiPropertyOptional({ description: "Give it to this organization (added to its buckets).", format: "uuid" })
+  @IsOptional()
+  @IsUUID()
+  ownerId?: string;
+}
+
 export class UpdateClientDto {
   @ApiPropertyOptional({ description: "false turns its key off." })
   @IsOptional()
@@ -165,6 +177,26 @@ export class ClientsController {
   })
   buckets() {
     return this.assets.bucketSummary();
+  }
+
+  @Post("buckets")
+  @ApiOperation({
+    summary: "Make a bucket",
+    description:
+      "In this service's region, readable by url (no listing, no writing without keys), allowed at once " +
+      "without an S3_BUCKETS edit. With ownerId, it is added to that organization's buckets.",
+  })
+  async createBucket(@Body() dto: CreateBucketDto) {
+    return this.clients.createBucket(dto.name, dto.ownerId);
+  }
+
+  @Get(":id/secret")
+  @ApiOperation({
+    summary: "Show a secret",
+    description: "The organization's current secret, for the console to show or copy. Only for secrets made after they were kept.",
+  })
+  revealSecret(@Param("id", ParseUUIDPipe) id: string) {
+    return this.clients.revealSecret(id);
   }
 
   @Post(":id/secret")

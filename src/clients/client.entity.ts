@@ -21,6 +21,10 @@ export class Client {
   @Column({ name: "secret_hash", length: 64 })
   secretHash: string;
 
+  /** The secret itself, encrypted (SecretBox), so the console can show it again. Null for older ones. */
+  @Column({ name: "secret_enc", type: "varchar", length: 512, nullable: true })
+  secretEnc: string | null;
+
   /** Where its files go when it names no other bucket of its own. */
   @Column({ length: 63 })
   bucket: string;

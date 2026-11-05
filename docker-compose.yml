@@ -95,6 +95,8 @@ services:
       # refuses callers without a client key.
       ADMIN_KEY: ${ADMIN_KEY:-}
       REQUIRE_CLIENT_KEY: ${REQUIRE_CLIENT_KEY:-false}
+      # Encrypts organizations' secrets so the console can show them again; empty: ADMIN_KEY.
+      SECRETS_KEY: ${SECRETS_KEY:-}
 
       SWAGGER: ${SWAGGER:-false}
     ports:
